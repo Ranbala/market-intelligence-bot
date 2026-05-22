@@ -8,15 +8,9 @@ on:
 
 jobs:
   run-bot:
-
     runs-on: ubuntu-latest
 
-    defaults:
-      run:
-        working-directory: app
-
     steps:
-
       - name: Checkout Repository
         uses: actions/checkout@v4
 
@@ -25,14 +19,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Debug Files
+      - name: Debug Repository Structure
         run: |
           pwd
-          ls -la
+          ls -R
 
       - name: Install Dependencies
         run: |
-          pip install -r ../requirements.txt
+          pip install -r requirements.txt
 
       - name: Run Bot
         env:
@@ -42,4 +36,4 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
         run: |
-          python main.py
+          python app/main.py
