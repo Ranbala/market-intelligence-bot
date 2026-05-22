@@ -30,28 +30,58 @@ GROQ_MODEL = "openai/gpt-oss-20b"
 # PROMPT BUILDER
 # =========================================================
 
-def build_prompt(title):
+def build_prompt(news_text):
 
     return f"""
-You are a stock market intelligence AI.
+You are an expert Indian stock market intelligence AI.
 
-Analyze this market news headline.
+Analyze the below financial news article carefully.
 
-Headline:
-{title}
+Your goals:
+
+1. Identify impacted Indian stocks.
+2. Identify impacted sectors if applicable.
+3. Detect whether impact is Positive, Negative or Neutral.
+4. Classify the market event type.
+5. Give importance score from 1-10.
+6. Write short easy-English actionable summary.
+7. Ignore recommendation/advisory style content.
+
+VERY IMPORTANT:
+
+- If company names are directly mentioned,
+  include them in IMPACTED_STOCKS.
+
+- If the company names are not directly mentioned, then check this news can impact which stocks and add those in the IMPACTED_STOCKS
+
+- If macro news affects sectors,
+  infer major Indian stocks.
+
+Examples:
+
+Weak Rupee:
+Infosys, TCS, Wipro
+
+Oil Price Rise:
+ONGC, Oil India, Indigo
+
+Rate Cuts:
+HDFC Bank, ICICI Bank
 
 Return STRICTLY in this format:
 
-EVENT_TYPE: <type>
+IMPACTED_STOCKS: comma separated names
 
-SENTIMENT: <Positive/Negative/Neutral>
+EVENT_TYPE: short event type
 
-IMPORTANCE: <1-10>
+SENTIMENT: Positive / Negative / Neutral
 
-SUMMARY: <2-line summary>
+IMPORTANCE: 1-10
 
-Only return these fields.
-Keep the summary in simple easy English.
+SUMMARY: short simple-English summary
+
+NEWS ARTICLE:
+{news_text}
 """
 
 # =========================================================
@@ -84,9 +114,9 @@ def analyze_with_groq(prompt):
 # MAIN ANALYZER
 # =========================================================
 
-def analyze_news(title):
+def analyze_news(news_text):
 
-    prompt = build_prompt(title)
+    prompt = build_prompt(news_text)
 
     # TRY GEMINI FIRST
     try:
@@ -108,7 +138,7 @@ def analyze_news(title):
 
     except Exception as groq_error:
 
-        return f"""
+        return f'''
 AI ANALYSIS FAILED
 
 GEMINI ERROR:
@@ -116,4 +146,4 @@ GEMINI ERROR:
 
 GROQ ERROR:
 {str(groq_error)}
-"""
+'''
