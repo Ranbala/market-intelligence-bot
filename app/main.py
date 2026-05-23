@@ -14,6 +14,7 @@ from services.llm_router import (
 from dotenv import load_dotenv
 from utils.date_extractor import extract_filing_dates
 from utils.filing_printer import print_filing_event
+from database import create_tables
 
 load_dotenv()
 
@@ -175,6 +176,7 @@ def format_filing_telegram_message(
 def main():
 
     init_db()
+    create_tables()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     debug_file = open(
