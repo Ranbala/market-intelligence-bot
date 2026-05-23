@@ -1,6 +1,16 @@
 import sqlite3
+import os
 
-DB_PATH = "../data/news.db"
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
+
+DB_PATH = os.path.join(
+    BASE_DIR,
+    "..",
+    "data",
+    "news.db"
+)
 
 
 def init_db():
