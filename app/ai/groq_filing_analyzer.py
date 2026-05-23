@@ -91,7 +91,7 @@ Format:
 }}
 
 FILING:
-{text[:12000]}
+{text[:6000]}
 """
 
     response = groq_client.responses.create(
