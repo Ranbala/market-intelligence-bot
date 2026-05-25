@@ -3,21 +3,9 @@ from loguru import logger
 
 RSS_FEEDS = {
     "Moneycontrol": "https://www.moneycontrol.com/rss/MCtopnews.xml",
-
-    "ETMarkets":
-    "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
-
-    "LiveMint":
-    "https://www.livemint.com/rss/markets",
-
-    "Investing":
-    "https://www.investing.com/rss/news.rss",
-
-    "Reuters": "https://news.google.com/rss/search?q=site:reuters.com+india+stocks&hl=en-IN&gl=IN&ceid=IN:en",
-    
-    "CNBC": "https://news.google.com/rss/search?q=site:cnbctv18.com+market&hl=en-IN&gl=IN&ceid=IN:en",
-    
-    "Bloomberg": "https://news.google.com/rss/search?q=site:bloomberg.com+india+markets&hl=en-IN&gl=IN&ceid=IN:en",
+    "ETMarkets": "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
+    "LiveMint": "https://www.livemint.com/rss/markets",
+    "CNBC": "https://www.cnbctv18.com/commonfeeds/v1/cne/rss/market.xml",
 }
 
 

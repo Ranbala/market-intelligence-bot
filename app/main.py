@@ -6,30 +6,39 @@ from fetchers.article_fetcher import fetch_full_article
 from fetchers.filing_fetcher import fetch_nse_filings
 from fetchers.filing_filter import filter_important_filings
 from analyzers.filing_analyzer import analyze_filing
-from fetchers.pdf_extractor import extract_pdf_text
+from fetchers.pdf_extractor import (
+    extract_pdf_text,
+    extract_pdf_text_from_bytes
+)
 from analyzers.event_cluster import cluster_filings
-from services.llm_router import (
+from ai.filing_ai_router import (
     analyze_filing_with_llm
 )
 from dotenv import load_dotenv
 from utils.date_extractor import extract_filing_dates
 from utils.filing_printer import print_filing_event
-from database import init_db
-
-
-load_dotenv()
-
+import hashlib
 from database import (
     init_db,
     news_exists,
     save_news,
     filing_exists,
-    save_filing
+    save_filing,
+    filing_hash_exists,
+    save_filing_hash
 )
-
 import re
 from datetime import datetime
+import requests
+import time
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    as_completed
+)
 
+DEBUG_MODE = False
+
+load_dotenv()
 
 # =========================================================
 # TELEGRAM MESSAGE FORMATTER
@@ -170,38 +179,142 @@ def format_filing_telegram_message(
 
     return telegram_message
 
+def process_news_item(item):
+
+    try:
+        if news_exists(item["title"]):
+            return (
+                f"⏭ DUPLICATE SKIPPED: "
+                f"{item['title'][:80]}"
+                )
+
+        full_article = fetch_full_article(
+            item["link"]
+        )
+
+        content_for_ai = item["title"]
+
+        if full_article:
+            content_for_ai += (
+                "\n\n"
+                + full_article[:1500]
+            )
+
+        analysis = analyze_news(
+            content_for_ai
+        )
+
+        if (
+            not analysis
+            or not isinstance(
+                analysis,
+                str
+            )
+        ):
+
+            analysis = """
+EVENT_TYPE: General Market News
+SENTIMENT: Neutral
+IMPORTANCE: 5
+IMPACTED_STOCKS: Unknown
+SUMMARY:
+AI analysis unavailable. Fallback neutral classification used.
+"""
+
+        telegram_message = (
+            format_telegram_message(
+                item["title"],
+                analysis,
+                item["source"],
+                item["published"]
+            )
+        )
+
+        send_telegram_message(
+            telegram_message
+        )
+
+        save_news(
+            item["title"],
+            item["source"],
+            item["published"]
+        )
+
+        return (
+            f"✅ DONE: "
+            f"{item['title'][:80]}"
+        )
+
+    except Exception as e:
+
+        return (
+            f"❌ FAILED: "
+            f"{item['title'][:80]} "
+            f"| ERROR: {str(e)}"
+        )
+
+
+
 # =========================================================
 # MAIN
 # =========================================================
 
 def main():
-
+    start_time = time.time()
     init_db()
-
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     debug_file = open(
     f"debug_news_{timestamp}.txt",
     "w",
     encoding="utf-8"
-)
+    )
     raw_news = fetch_news()
     
+
     print("\n================ NSE FILINGS ================\n")
     filings = fetch_nse_filings()
+
+    print("\n================ ALL NSE FILINGS ================\n")
+    for idx, filing in enumerate(filings, start=1):
+        print(
+            f"{idx}. "
+            f"{filing.get('symbol')} | "
+            f"{filing.get('desc')} | "
+            f"{filing.get('an_dt')} | "
+            f"{filing.get('attchmntFile', '')[:80]}"
+            )
+    print("\n=================================================\n")
+
+
     important_filings = filter_important_filings(filings)
+
+    if DEBUG_MODE:
+        ##need to remove this - testing purpose only
+        print(
+            f"IMPORTANT FILINGS: "
+            f"{len(important_filings)}"
+            )
     
+        for filing in important_filings:
+            print(
+                filing.get("symbol"),
+                "|",
+                filing.get("desc")
+                )
+        ##need to remove this - testing purpose only
+
     clustered_events = cluster_filings(
         important_filings
         )
 
     for cluster_key, cluster_filings_list in list(
         clustered_events.items()
-    )[:10]:
+        )[:10]:
 
-        print("\n" + "#" * 100)
-        print(f"\n🔥 EVENT CLUSTER: {cluster_key}")
-        print("#" * 100)
+        if DEBUG_MODE:
+            print("\n" + "#" * 100)
+            print(f"\n🔥 EVENT CLUSTER: {cluster_key}")
+            print("#" * 100)
 
         combined_pdf_text = ""
 
@@ -215,9 +328,11 @@ def main():
         primary_filing = sorted_cluster[0]
 
         analyzed = analyze_filing(primary_filing)
-        exchange_time = primary_filing.get(
-            "dateTime",
-            "Unknown"
+        exchange_time = (
+            primary_filing.get("exchdisstime")
+            or primary_filing.get("an_dt")
+            or primary_filing.get("sort_date")
+            or "Unknown"
             )
 
         for filing in cluster_filings_list:
@@ -225,11 +340,52 @@ def main():
                 "attchmntFile",
                 ""
                 )
+            
             if pdf_url:
-                pdf_text = extract_pdf_text(pdf_url)
+                try:
+                    print(f"🔽 DOWNLOADING HASH PDF: {pdf_url}")
+                    pdf_bytes = response = requests.get(
+                        pdf_url,
+                        timeout=(10, 60),
+                        headers={
+                            "User-Agent": "Mozilla/5.0"
+                            }
+                        ).content
+                    
+                    file_hash = hashlib.sha256(
+                        pdf_bytes
+                        ).hexdigest()
+                
+                except Exception as e:
+                    print(
+                        f"❌ HASH DOWNLOAD FAILED: "
+                        f"{pdf_url}"
+                        )
+                    print(str(e))
+                    continue
+                
+                if filing_hash_exists(file_hash):
+                    print(
+                        f"⏭ DUPLICATE HASH SKIPPED: "
+                        f"{pdf_url}"
+                    )
+                    continue
+                
+                pdf_text = extract_pdf_text_from_bytes(
+                    pdf_bytes
+                )
+
                 combined_pdf_text += (
                     "\n\n" + pdf_text[:8000]
                 )
+        
+        if not combined_pdf_text.strip():
+            print(
+                "⏭ ENTIRE CLUSTER SKIPPED "
+                "(ALL PDFs DUPLICATE)"
+                )
+            continue
+
         detected_dates = extract_filing_dates(
             combined_pdf_text
             )
@@ -303,6 +459,7 @@ def main():
             f"NSE DEDUPE KEY: {unique_filing_id[:120]}"
         )
 
+        
         if filing_exists(unique_filing_id):
             print(
                 f"SKIPPED NSE DUPLICATE | "
@@ -338,6 +495,19 @@ def main():
                 event_name,
                 exchange_time
                 )
+            
+            save_filing_hash(
+                    symbol=primary_filing["symbol"],
+                    file_hash=file_hash,
+                    normalized_hash=None,
+                    source_url=pdf_url,
+                    file_name=pdf_url.split("/")[-1],
+                    exchange_time=exchange_time,
+                    processing_status="SUCCESS",
+                    ai_processed=1,
+                    ai_provider=None
+                )
+            
 
     print("\n✅ Filing intelligence engine completed successfully.\n")
     
@@ -450,7 +620,7 @@ def main():
     "52-week",
     "all-time high",
     "record high"
-]
+    ]
 
     for item in filtered_news:
 
@@ -466,52 +636,39 @@ def main():
         key=lambda x: x["published"]
     )
 
-    for idx, item in enumerate(priority_news, start=1):
-        if news_exists(item["title"]):
-            continue
-
-        print("=" * 120)
-
-        print(f"\n{idx}. SOURCE     : {item['source']}")
-
-        print(f"TITLE           : {item['title']}")
-
-        print(f"PUBLISHED       : {item['published']}")
-
-        print("\nAI ANALYSIS:\n")
-
-        full_article = fetch_full_article(
-            item["link"]
-            )
-        content_for_ai = item["title"]
-        if full_article:
-            content_for_ai += "\n\n" + full_article[:5000]
+    print(
+        f"\n🚀 Processing "
+        f"{len(priority_news)} news items "
+        f"using parallel threads...\n"
+        )
         
-        analysis = analyze_news(content_for_ai)
+    with ThreadPoolExecutor(
+        max_workers=5
+        ) as executor:
 
-        print(analysis)
+        futures = [
+            executor.submit(
+                process_news_item,
+                item
+            )
+            for item in priority_news
+        ]
 
-        telegram_message = format_telegram_message(
-            item["title"],
-            analysis,
-            item["source"],
-            item["published"]
-        )
-
-        send_telegram_message(
-            telegram_message
-        )
-
-        save_news(
-            item["title"],
-            item["source"],
-            item["published"]
-        )
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                print(result)
 
     debug_file.close()
 
     print(f"\nDebug news exported successfully.")
-
+    
+    end_time = time.time()
+    total_seconds = (end_time - start_time)
+    print(
+        f"\n⏱ TOTAL EXECUTION TIME: "
+        f"{total_seconds:.2f} seconds"
+        )
 
 if __name__ == "__main__":
 

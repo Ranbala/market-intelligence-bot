@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from loguru import logger
+from dateutil import parser
 
 
 # =========================================================
@@ -138,7 +139,13 @@ EXCLUDED_KEYWORDS = [
     "treasury yield",
     "dow jones",
     "nasdaq",
-    "s&p 500"
+    "s&p 500",
+    "swot analysis",
+    "technical analysis",
+    "chart analysis",
+    "market analysis",
+    "wealth summit",
+    "masterclass",
 ]
 
 
@@ -147,19 +154,26 @@ EXCLUDED_KEYWORDS = [
 # =========================================================
 
 def is_recent(published_date):
-
     try:
+        news_date = parser.parse(
+            published_date
+            )
+        
+        now = datetime.now(
+            news_date.tzinfo
+        ) if news_date.tzinfo else datetime.now()
 
-        news_date = datetime.strptime(
-            published_date,
-            "%a, %d %b %Y %H:%M:%S %z"
+        return (
+            news_date >=
+            now - timedelta(days=2)
         )
 
-        now = datetime.now(news_date.tzinfo)
-
-        return news_date >= now - timedelta(days=2)
-
-    except:
+    except Exception as e:
+        print(
+            f"DATE PARSE FAILED | "
+            f"DATE: {published_date} | "
+            f"ERROR: {str(e)}"
+        )
 
         return False
 
@@ -172,21 +186,28 @@ def is_relevant(title):
 
     title_lower = title.lower()
 
-    # Remove noisy/recommendation content
     for keyword in EXCLUDED_KEYWORDS:
 
         if keyword in title_lower:
 
-            return False
+            return (
+                False,
+                f"EXCLUDED KEYWORD: {keyword}"
+            )
 
-    # Keep important market news
     for keyword in IMPORTANT_KEYWORDS:
 
         if keyword in title_lower:
 
-            return True
+            return (
+                True,
+                f"IMPORTANT KEYWORD: {keyword}"
+            )
 
-    return False
+    return (
+        False,
+        "NO IMPORTANT KEYWORD MATCH"
+    )
 
 
 # =========================================================
@@ -208,14 +229,16 @@ def filter_news(news_list):
             continue
 
         # Remove irrelevant news
-        if not is_relevant(title):
+        is_valid, reason = is_relevant(title)
+        if not is_valid:
 
-            print(
-                f"FILTER REJECTED | "
-                f"SOURCE: {item['source']} | "
-                f"PUBLISHED: {published} | "
-                f"TITLE: {title}"
-            )
+            # print(
+            #     f"FILTER REJECTED | "
+            #     f"REASON: {reason} | "
+            #     f"SOURCE: {item['source']} | "
+            #     f"PUBLISHED: {published} | "
+            #     f"TITLE: {title}"
+            # )
 
             continue
 

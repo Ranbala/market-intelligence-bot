@@ -1,5 +1,4 @@
 LOW_VALUE_KEYWORDS = [
-
     "newspaper publication",
     "analyst",
     "conference call",
@@ -9,6 +8,18 @@ LOW_VALUE_KEYWORDS = [
     "postal ballot",
     "esop",
     "grant of options",
+
+    # new additions
+    "investor presentation",
+    "earnings call",
+    "analyst meet",
+    "schedule of analysts",
+    "institutional investors meet",
+    "clarification",
+    "audio recording",
+    "transcript",
+    "presentation",
+    "investor interaction",
 ]
 
 HIGH_IMPACT_KEYWORDS = [

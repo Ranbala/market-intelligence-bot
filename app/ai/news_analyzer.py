@@ -2,8 +2,13 @@ import os
 from dotenv import load_dotenv
 from google import genai
 from openai import OpenAI
+import threading
+import time
 
 load_dotenv()
+
+cerebras_lock = threading.Lock()
+last_cerebras_call = 0
 
 # =========================================================
 # GEMINI SETUP
@@ -25,6 +30,18 @@ groq_client = OpenAI(
 )
 
 GROQ_MODEL = "openai/gpt-oss-20b"
+
+# =========================================================
+# CEREBRAS SETUP
+# =========================================================
+
+cerebras_client = OpenAI(
+    api_key=os.getenv("CEREBRAS_API_KEY"),
+    base_url="https://api.cerebras.ai/v1"
+)
+
+#CEREBRAS_MODEL = "gpt-oss-120b"
+CEREBRAS_MODEL = "llama3.1-8b"
 
 # =========================================================
 # PROMPT BUILDER
@@ -111,42 +128,136 @@ def analyze_with_groq(prompt):
     return response.output_text
 
 # =========================================================
+# CEREBRAS ANALYSIS
+# =========================================================
+
+def analyze_with_cerebras(prompt):
+
+    global last_cerebras_call
+    with cerebras_lock:
+        current_time = time.time()
+        elapsed = (current_time - last_cerebras_call)
+        
+        if elapsed < 2:
+            time.sleep(2 - elapsed)
+        last_cerebras_call = time.time()
+    
+    response = cerebras_client.chat.completions.create(
+        model=CEREBRAS_MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        temperature=0.2,
+        max_tokens=500
+    )
+
+    if (not response.choices or not response.choices[0].message):
+        raise Exception(
+            "Invalid response from Cerebras")
+    result = (response.choices[0].message.content)
+
+    if not result or not result.strip():
+
+        response = cerebras_client.chat.completions.create(
+            model=CEREBRAS_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.2,
+            max_tokens=500
+        )
+
+        result = response.choices[0].message.content
+
+    if not result or not result.strip():
+
+        raise Exception(
+            "Empty response from Cerebras"
+        )
+
+    return result
+
+# =========================================================
 # MAIN ANALYZER
 # =========================================================
 
 def analyze_news(news_text):
 
     prompt = build_prompt(news_text)
-    gemini_error = None
-    groq_error = None
 
-    # TRY GEMINI FIRST
+    cerebras_error = None
+    groq_error = None
+    gemini_error = None
+
+    # =====================================================
+    # TRY CEREBRAS FIRST
+    # =====================================================
+
     try:
 
-        print("Using Gemini AI...")
+        print("Using Cerebras AI...")
 
-        return analyze_with_gemini(prompt)
+        return analyze_with_cerebras(prompt)
 
-    except Exception as gemini_error:
+    except Exception as e:
 
-        print(f"Gemini failed: {gemini_error}")
+        cerebras_error = e
+
+        print(f"Cerebras failed: {e}")
         print("Switching to Groq AI...")
 
-    # FALLBACK TO GROQ
+    # =====================================================
+    # TRY GROQ
+    # =====================================================
+
     try:
 
         print("Using Groq AI...")
 
         return analyze_with_groq(prompt)
 
-    except Exception as groq_error:
+    except Exception as e:
 
-        return f'''
-AI ANALYSIS FAILED
+        groq_error = e
 
-GEMINI ERROR:
-{str(gemini_error)}
+        print(f"Groq failed: {e}")
+        print("Switching to Gemini AI...")
 
-GROQ ERROR:
-{str(groq_error)}
-'''
+    # =====================================================
+    # TRY GEMINI
+    # =====================================================
+
+    try:
+
+        print("Using Gemini AI...")
+
+        return analyze_with_gemini(prompt)
+
+    except Exception as e:
+
+        gemini_error = e
+
+        print(f"Gemini failed: {e}")
+
+    # =====================================================
+    # FINAL FALLBACK
+    # =====================================================
+
+    return f"""
+IMPACTED_STOCKS: Unknown
+
+EVENT_TYPE: Unknown
+
+SENTIMENT: Neutral
+
+IMPORTANCE: 5
+
+SUMMARY:
+AI analysis unavailable. Fallback neutral classification used.
+"""

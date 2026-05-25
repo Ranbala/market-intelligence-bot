@@ -1,8 +1,10 @@
 import fitz
 import requests
 import tempfile
-
 from loguru import logger
+import io
+from PyPDF2 import PdfReader
+
 
 
 def extract_pdf_text(pdf_url):
@@ -65,6 +67,37 @@ def extract_pdf_text(pdf_url):
 
         logger.error(
             f"PDF extraction failed: {str(e)}"
+        )
+
+        return ""
+
+def extract_pdf_text_from_bytes(pdf_bytes):
+
+    try:
+
+        text = ""
+
+        pdf_stream = io.BytesIO(pdf_bytes)
+
+        pdf_reader = PdfReader(pdf_stream)
+
+        for page in pdf_reader.pages:
+
+            extracted = page.extract_text()
+
+            if extracted:
+                text += extracted + "\n"
+
+        logger.success(
+            "PDF text extracted successfully from bytes"
+        )
+
+        return text
+
+    except Exception as e:
+
+        logger.error(
+            f"PDF byte extraction failed: {str(e)}"
         )
 
         return ""
