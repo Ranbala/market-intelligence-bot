@@ -127,7 +127,8 @@ def analyze_news(news_text):
 
     except Exception as gemini_error:
 
-        print("Gemini quota exceeded. Switching to Groq AI...")
+        print(f"Gemini failed: {gemini_error}")
+        print("Switching to Groq AI...")
 
     # FALLBACK TO GROQ
     try:
