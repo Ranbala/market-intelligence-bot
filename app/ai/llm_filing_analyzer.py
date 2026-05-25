@@ -42,7 +42,7 @@ Rules:
 - Ignore generic legal wording
 
 Corporate Filing:
-{text[:12000]}
+{text[:6000]}
 """
 
         response = client.chat.completions.create(

@@ -228,7 +228,7 @@ def main():
             if pdf_url:
                 pdf_text = extract_pdf_text(pdf_url)
                 combined_pdf_text += (
-                    "\n\n" + pdf_text[:30000]
+                    "\n\n" + pdf_text[:8000]
                 )
         detected_dates = extract_filing_dates(
             combined_pdf_text
@@ -239,17 +239,43 @@ def main():
                 combined_pdf_text
                 )
         else:
+            fallback_importance = 5
+            fallback_sentiment = "Neutral"
+            pdf_lower = combined_pdf_text.lower()
+            
+            # High importance keywords
+            if "financial results" in pdf_lower:
+                fallback_importance = 9
+                fallback_sentiment = "Positive"
+            if "dividend" in pdf_lower:
+                fallback_importance = max(fallback_importance, 8)
+                fallback_sentiment = "Positive"
+            if "acquisition" in pdf_lower:
+                fallback_importance = max(fallback_importance, 9)
+                fallback_sentiment = "Positive"
+            if "board meeting" in pdf_lower:
+                fallback_importance = max(fallback_importance, 7)
+            if "qip" in pdf_lower:
+                fallback_importance = max(fallback_importance, 8)
+            if "cirp" in pdf_lower:
+                fallback_importance = max(fallback_importance, 9)
+                fallback_sentiment = "Negative"
+
             ai_summary = {
                 "summary_points": [
-                    "No PDF content available for AI analysis."
-                ],
-                "sentiment": "Neutral",
-                "importance": 5,
+                    "Fallback rule-based analysis used."
+                    ],
+                "sentiment": fallback_sentiment,
+                "importance": fallback_importance,
                 "key_event": analyzed.get(
-                    "event_type",
-                    "Corporate Filing"
-                )
-            }
+                "event_type",
+                "Corporate Filing"
+            ),
+        "market_impact": (
+            "Rule-based fallback engine detected "
+            "important corporate filing."
+        )
+    }
 
         event_name = ai_summary.get(
             "key_event",
@@ -293,7 +319,7 @@ def main():
             combined_pdf_text
             )
 
-        if ai_summary.get("importance", 0) >= 7:
+        if ai_summary.get("importance", 0) >= 5:
 
             telegram_message = format_filing_telegram_message(
                 analyzed,

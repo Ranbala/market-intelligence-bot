@@ -1,18 +1,15 @@
 import os
 import json
-
-import google.generativeai as genai
+from google import genai
+from openai import OpenAI
 
 from loguru import logger
 
-
-genai.configure(
+gemini_client = genai.Client(
     api_key=os.getenv("GEMINI_API_KEY")
 )
 
-model = genai.GenerativeModel(
-    "gemini-1.5-flash"
-)
+GEMINI_MODEL = "gemini-3.5-flash"
 
 
 def analyze_filing_with_gemini(text):
@@ -38,11 +35,12 @@ def analyze_filing_with_gemini(text):
     }}
 
     Filing Text:
-    {text[:12000]}
+    {text[:6000]}
     """
 
-    response = model.generate_content(prompt)
-
+    response = gemini_client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt
+    )
     result = response.text
-
     return json.loads(result)
