@@ -254,16 +254,29 @@ def main():
         event_name = ai_summary.get(
             "key_event",
             analyzed.get("event_type", "Unknown")
-            )
-        
-        symbol = analyzed.get("symbol","UNKNOWN")
-        
+        )
+
+        symbol = analyzed.get("symbol", "UNKNOWN")
+
+        attachment_urls = []
+
+        for filing in cluster_filings_list:
+            pdf_url = filing.get("attchmntFile", "")
+
+            if pdf_url:
+                attachment_urls.append(pdf_url)
+
+        attachment_key = "|".join(sorted(attachment_urls))
+
         unique_filing_id = (
             f"{symbol}_"
-            f"{exchange_time}_"
-            f"{event_name}"
-            )
+            f"{attachment_key}"
+        )
         
+        print(
+            f"NSE DEDUPE KEY: {unique_filing_id[:120]}"
+        )
+
         if filing_exists(unique_filing_id):
             print(
                 f"SKIPPED NSE DUPLICATE | "
