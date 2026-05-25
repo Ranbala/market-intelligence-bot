@@ -117,6 +117,8 @@ def analyze_with_groq(prompt):
 def analyze_news(news_text):
 
     prompt = build_prompt(news_text)
+    gemini_error = None
+    groq_error = None
 
     # TRY GEMINI FIRST
     try:
