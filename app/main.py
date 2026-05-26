@@ -256,20 +256,10 @@ AI analysis unavailable. Fallback neutral classification used.
 
 
 # =========================================================
-# MAIN
+# NSE FILING PIPELINE
 # =========================================================
 
-def main():
-    start_time = time.time()
-    init_db()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    debug_file = open(
-    f"debug_news_{timestamp}.txt",
-    "w",
-    encoding="utf-8"
-    )
-    raw_news = fetch_news()
-    
+def run_nse_filing_pipeline():
 
     print("\n================ NSE FILINGS ================\n")
     filings = fetch_nse_filings()
@@ -282,34 +272,31 @@ def main():
             f"{filing.get('desc')} | "
             f"{filing.get('an_dt')} | "
             f"{filing.get('attchmntFile', '')[:80]}"
-            )
+        )
     print("\n=================================================\n")
-
 
     important_filings = filter_important_filings(filings)
 
     if DEBUG_MODE:
-        ##need to remove this - testing purpose only
         print(
             f"IMPORTANT FILINGS: "
             f"{len(important_filings)}"
-            )
-    
+        )
+
         for filing in important_filings:
             print(
                 filing.get("symbol"),
                 "|",
                 filing.get("desc")
-                )
-        ##need to remove this - testing purpose only
+            )
 
     clustered_events = cluster_filings(
         important_filings
-        )
+    )
 
     for cluster_key, cluster_filings_list in list(
         clustered_events.items()
-        )[:10]:
+    )[:10]:
 
         if DEBUG_MODE:
             print("\n" + "#" * 100)
@@ -318,7 +305,6 @@ def main():
 
         combined_pdf_text = ""
 
-        # Highest importance filing
         sorted_cluster = sorted(
             cluster_filings_list,
             key=lambda x: analyze_filing(x)["importance"],
@@ -333,44 +319,44 @@ def main():
             or primary_filing.get("an_dt")
             or primary_filing.get("sort_date")
             or "Unknown"
-            )
+        )
 
         for filing in cluster_filings_list:
             pdf_url = filing.get(
                 "attchmntFile",
                 ""
-                )
-            
+            )
+
             if pdf_url:
                 try:
                     print(f"🔽 DOWNLOADING HASH PDF: {pdf_url}")
-                    pdf_bytes = response = requests.get(
+                    pdf_bytes = requests.get(
                         pdf_url,
                         timeout=(10, 60),
                         headers={
                             "User-Agent": "Mozilla/5.0"
-                            }
-                        ).content
-                    
+                        }
+                    ).content
+
                     file_hash = hashlib.sha256(
                         pdf_bytes
-                        ).hexdigest()
-                
+                    ).hexdigest()
+
                 except Exception as e:
                     print(
                         f"❌ HASH DOWNLOAD FAILED: "
                         f"{pdf_url}"
-                        )
+                    )
                     print(str(e))
                     continue
-                
+
                 if filing_hash_exists(file_hash):
                     print(
                         f"⏭ DUPLICATE HASH SKIPPED: "
                         f"{pdf_url}"
                     )
                     continue
-                
+
                 pdf_text = extract_pdf_text_from_bytes(
                     pdf_bytes
                 )
@@ -378,28 +364,27 @@ def main():
                 combined_pdf_text += (
                     "\n\n" + pdf_text[:8000]
                 )
-        
+
         if not combined_pdf_text.strip():
             print(
                 "⏭ ENTIRE CLUSTER SKIPPED "
                 "(ALL PDFs DUPLICATE)"
-                )
+            )
             continue
 
         detected_dates = extract_filing_dates(
             combined_pdf_text
-            )
+        )
 
         if combined_pdf_text.strip():
             ai_summary = analyze_filing_with_llm(
                 combined_pdf_text
-                )
+            )
         else:
             fallback_importance = 5
             fallback_sentiment = "Neutral"
             pdf_lower = combined_pdf_text.lower()
-            
-            # High importance keywords
+
             if "financial results" in pdf_lower:
                 fallback_importance = 9
                 fallback_sentiment = "Positive"
@@ -420,18 +405,18 @@ def main():
             ai_summary = {
                 "summary_points": [
                     "Fallback rule-based analysis used."
-                    ],
+                ],
                 "sentiment": fallback_sentiment,
                 "importance": fallback_importance,
                 "key_event": analyzed.get(
-                "event_type",
-                "Corporate Filing"
-            ),
-        "market_impact": (
-            "Rule-based fallback engine detected "
-            "important corporate filing."
-        )
-    }
+                    "event_type",
+                    "Corporate Filing"
+                ),
+                "market_impact": (
+                    "Rule-based fallback engine detected "
+                    "important corporate filing."
+                )
+            }
 
         event_name = ai_summary.get(
             "key_event",
@@ -454,12 +439,11 @@ def main():
             f"{symbol}_"
             f"{attachment_key}"
         )
-        
+
         print(
             f"NSE DEDUPE KEY: {unique_filing_id[:120]}"
         )
 
-        
         if filing_exists(unique_filing_id):
             print(
                 f"SKIPPED NSE DUPLICATE | "
@@ -474,7 +458,7 @@ def main():
             exchange_time,
             detected_dates,
             combined_pdf_text
-            )
+        )
 
         if ai_summary.get("importance", 0) >= 5:
 
@@ -484,7 +468,7 @@ def main():
                 exchange_time,
                 detected_dates
             )
-            
+
             send_telegram_message(
                 telegram_message
             )
@@ -494,132 +478,100 @@ def main():
                 symbol,
                 event_name,
                 exchange_time
-                )
-            
+            )
+
             save_filing_hash(
-                    symbol=primary_filing["symbol"],
-                    file_hash=file_hash,
-                    normalized_hash=None,
-                    source_url=pdf_url,
-                    file_name=pdf_url.split("/")[-1],
-                    exchange_time=exchange_time,
-                    processing_status="SUCCESS",
-                    ai_processed=1,
-                    ai_provider=None
-                )
-            
+                symbol=primary_filing["symbol"],
+                file_hash=file_hash,
+                normalized_hash=None,
+                source_url=pdf_url,
+                file_name=pdf_url.split("/")[-1],
+                exchange_time=exchange_time,
+                processing_status="SUCCESS",
+                ai_processed=1,
+                ai_provider=None
+            )
 
     print("\n✅ Filing intelligence engine completed successfully.\n")
-    
-    header = (
-        "\n" + "=" * 120 + "\n"
-        + "ALL RAW NEWS FOR VALIDATION\n"
-        + "=" * 120
+
+# =========================================================
+# RSS NEWS PIPELINE
+# =========================================================
+
+def run_rss_news_pipeline():
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    debug_file = open(
+        f"debug_news_{timestamp}.txt",
+        "w",
+        encoding="utf-8"
     )
 
-    #print(header)
-    #debug_file.write(header + "\n")
-    
-    for idx, item in enumerate(raw_news, start=1):
-
-        raw_message = (
-            f"\n{idx}. SOURCE     : {item['source']}\n"
-            f"TITLE           : {item['title']}\n"
-            f"PUBLISHED       : {item['published']}\n"
-            + "-" * 120
-        )
-
-        #print(raw_message)
-        #debug_file.write(raw_message + "\n")
-
-    raw_count_message = f"\nRAW NEWS COUNT: {len(raw_news)}\n"
-
-    #print(raw_count_message)
-    #debug_file.write(raw_count_message)
+    raw_news = fetch_news()
 
     filtered_news = filter_news(raw_news)
     source_count = {}
-    
+
     for item in filtered_news:
         source = item["source"]
         source_count[source] = source_count.get(source, 0) + 1
-    print("\nFILTERED SOURCE BREAKDOWN:\n")
-    
-    #for source, count in source_count.items():
-    #    print(f"{source}: {count}")
-    
-    #filtered_count_message = (
-    #    f"\nFILTERED NEWS COUNT: {len(filtered_news)}\n"
-   # )
 
-    #print(filtered_count_message)
-    #debug_file.write(filtered_count_message)
+    print("\nFILTERED SOURCE BREAKDOWN:\n")
 
     priority_news = []
 
     priority_keywords = [
-
-    # Earnings / finance
-    "results",
-    "profit",
-    "revenue",
-    "earnings",
-    "ebitda",
-    "margin",
-
-    # Corporate actions
-    "dividend",
-    "bonus",
-    "split",
-    "buyback",
-    "stake",
-    "ofs",
-    "ipo",
-    "merger",
-    "acquisition",
-    "deal",
-    "approval",
-    "investment",
-    "order",
-
-    # Stock movement
-    "shares",
-    "stock",
-    "rally",
-    "surge",
-    "surges",
-    "zoom",
-    "jumps",
-    "rises",
-    "gains",
-    "falls",
-    "drops",
-    "slides",
-
-    # Macro / markets
-    "rbi",
-    "fed",
-    "inflation",
-    "interest rate",
-    "crude",
-    "oil",
-    "rupee",
-    "fii",
-    "dii",
-    "bond",
-    "treasury",
-    "economy",
-    "gdp",
-
-    # Markets
-    "sensex",
-    "nifty",
-    "bank nifty",
-
-    # Important levels
-    "52-week",
-    "all-time high",
-    "record high"
+        "results",
+        "profit",
+        "revenue",
+        "earnings",
+        "ebitda",
+        "margin",
+        "dividend",
+        "bonus",
+        "split",
+        "buyback",
+        "stake",
+        "ofs",
+        "ipo",
+        "merger",
+        "acquisition",
+        "deal",
+        "approval",
+        "investment",
+        "order",
+        "shares",
+        "stock",
+        "rally",
+        "surge",
+        "surges",
+        "zoom",
+        "jumps",
+        "rises",
+        "gains",
+        "falls",
+        "drops",
+        "slides",
+        "rbi",
+        "fed",
+        "inflation",
+        "interest rate",
+        "crude",
+        "oil",
+        "rupee",
+        "fii",
+        "dii",
+        "bond",
+        "treasury",
+        "economy",
+        "gdp",
+        "sensex",
+        "nifty",
+        "bank nifty",
+        "52-week",
+        "all-time high",
+        "record high"
     ]
 
     for item in filtered_news:
@@ -628,8 +580,6 @@ def main():
 
         if any(keyword in title for keyword in priority_keywords):
             priority_news.append(item)
-        else:
-            pass
 
     priority_news = sorted(
         priority_news,
@@ -640,11 +590,11 @@ def main():
         f"\n🚀 Processing "
         f"{len(priority_news)} news items "
         f"using parallel threads...\n"
-        )
-        
+    )
+
     with ThreadPoolExecutor(
         max_workers=5
-        ) as executor:
+    ) as executor:
 
         futures = [
             executor.submit(
@@ -662,13 +612,18 @@ def main():
     debug_file.close()
 
     print(f"\nDebug news exported successfully.")
-    
-    end_time = time.time()
-    total_seconds = (end_time - start_time)
-    print(
-        f"\n⏱ TOTAL EXECUTION TIME: "
-        f"{total_seconds:.2f} seconds"
-        )
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+    init_db()
+
+    run_nse_filing_pipeline()
+
+    run_rss_news_pipeline()
 
 if __name__ == "__main__":
 
