@@ -148,6 +148,215 @@ def format_telegram_message(title, analysis, source, published_time):
 # FILING TELEGRAM FORMATTER
 # =========================================================
 
+def format_percent(value):
+
+    if value is None:
+        return "N/A"
+
+    sign = "+" if value > 0 else ""
+
+    return f"{sign}{round(value, 2)}%"
+
+
+def calculate_percent_change(current, previous):
+
+    try:
+        if current is None or previous in [None, 0]:
+            return None
+
+        return round(
+            ((current - previous) / previous) * 100,
+            2
+        )
+
+    except Exception:
+        return None
+
+
+def format_amount_for_telegram(value, financial_unit):
+
+    if value is None:
+        return "N/A"
+
+    unit_name = (
+        financial_unit or {}
+    ).get(
+        "display_unit",
+        "reported units"
+    )
+
+    return f"{value} {unit_name}"
+
+
+def format_change_phrase(current, previous):
+
+    if current is None or previous is None:
+        return "N/A"
+
+    if current < 0 and previous < 0:
+        if previous == 0:
+            return "N/A"
+
+        loss_change = round(
+            ((abs(previous) - abs(current)) / abs(previous)) * 100,
+            2
+        )
+        label = (
+            "loss narrowed"
+            if loss_change >= 0
+            else "loss widened"
+        )
+
+        return f"{label} {format_percent(abs(loss_change))}"
+
+    if current >= 0 and previous < 0:
+        return "turned profitable"
+
+    if current < 0 and previous >= 0:
+        return "turned loss-making"
+
+    return format_percent(
+        calculate_percent_change(
+            current,
+            previous
+        )
+    )
+
+
+def format_metric_snapshot(
+    label,
+    metric_data,
+    financial_unit,
+    profit_metric=False
+):
+
+    if (
+        not metric_data
+        or not metric_data.get("period_mapping_complete")
+    ):
+        return ""
+
+    period_values = metric_data.get(
+        "period_values",
+        {}
+    )
+
+    year_current = period_values.get(
+        "year_current"
+    )
+    year_previous = period_values.get(
+        "year_previous"
+    )
+    quarter_current = period_values.get(
+        "quarter_current"
+    )
+    quarter_previous_year = period_values.get(
+        "quarter_previous_year"
+    )
+
+    year_change = (
+        format_change_phrase(
+            year_current,
+            year_previous
+        )
+        if profit_metric
+        else format_percent(
+            calculate_percent_change(
+                year_current,
+                year_previous
+            )
+        )
+    )
+
+    quarter_yoy = (
+        format_change_phrase(
+            quarter_current,
+            quarter_previous_year
+        )
+        if profit_metric
+        else format_percent(
+            calculate_percent_change(
+                quarter_current,
+                quarter_previous_year
+            )
+        )
+    )
+
+    return (
+        f"\n• {label} FY: "
+        f"{format_amount_for_telegram(year_current, financial_unit)} "
+        f"vs {format_amount_for_telegram(year_previous, financial_unit)} "
+        f"({year_change} YoY)"
+        f"\n  Qtr: {format_amount_for_telegram(quarter_current, financial_unit)} "
+        f"({quarter_yoy} YoY)"
+    )
+
+
+def build_financial_details_for_telegram(ai_summary):
+
+    financial_metrics = ai_summary.get(
+        "financial_metrics",
+        {}
+    )
+    financial_unit = ai_summary.get(
+        "financial_unit",
+        {}
+    )
+    financial_insights = ai_summary.get(
+        "financial_insights",
+        {}
+    )
+
+    if not financial_metrics:
+        return ""
+
+    details = "\n📊 Key Numbers:"
+
+    unit_name = financial_unit.get(
+        "display_unit",
+        "reported units"
+    )
+    details += f"\n• Unit: {unit_name}"
+
+    details += format_metric_snapshot(
+        "Revenue",
+        financial_metrics.get("revenue"),
+        financial_unit
+    )
+    details += format_metric_snapshot(
+        "PAT",
+        financial_metrics.get("profit_after_tax"),
+        financial_unit,
+        profit_metric=True
+    )
+    details += format_metric_snapshot(
+        "PBT",
+        financial_metrics.get("profit_before_tax"),
+        financial_unit,
+        profit_metric=True
+    )
+
+    if financial_insights.get(
+        "pat_loss_narrowed_pct"
+    ) is not None:
+        details += (
+            "\n• PAT Loss: narrowed "
+            f"{format_percent(financial_insights.get('pat_loss_narrowed_pct'))} YoY"
+        )
+
+    if financial_insights.get(
+        "pat_turnaround_from_loss"
+    ):
+        details += "\n• PAT: turned profitable from last year's loss"
+
+    if financial_insights.get(
+        "pat_declined_to_loss"
+    ):
+        details += "\n• PAT: declined from profit to loss"
+
+    return details
+
+
 def format_filing_telegram_message(
     analyzed,
     ai_summary,
@@ -156,7 +365,11 @@ def format_filing_telegram_message(
 ):
 
     stock = analyzed.get("symbol", "Unknown")
-    company = analyzed.get( "company_name") or analyzed.get("symbol","Unknown")
+    company = (
+        ai_summary.get("company_name")
+        or analyzed.get("company_name")
+        or analyzed.get("symbol", "Unknown")
+    )
     event = ai_summary.get(
         "key_event",
         analyzed.get("event_type", "Corporate Filing")
@@ -193,23 +406,6 @@ def format_filing_telegram_message(
         "execution_period",
         ""
     )
-    financial_insights = ai_summary.get(
-        "financial_insights",
-        {}
-        )
-    revenue_growth = financial_insights.get(
-        "revenue_growth_pct"
-        )
-    pat_growth = financial_insights.get(
-        "pat_growth_pct"
-        )
-    eps_growth = financial_insights.get(
-        "eps_growth_pct"
-        )
-    dividend = financial_insights.get(
-        "dividend_per_share"
-        )
-    
     extra_details = ""
     if client_name:
         extra_details += (
@@ -223,23 +419,10 @@ def format_filing_telegram_message(
         extra_details += (
             f"\n⏳ Execution    : {execution_period}"
             )
-    financial_details = ""
-    if revenue_growth:
-        financial_details += (
-            f"\n📊 Revenue Growth : +{round(revenue_growth, 2)}% YoY"
-            )
-    if pat_growth:
-        financial_details += (
-            f"\n💹 PAT Growth     : +{round(pat_growth, 2)}% YoY"
-            )
-    if eps_growth:
-        financial_details += (
-            f"\n💰 EPS Growth     : +{round(eps_growth, 2)}% YoY"
-            )
-    if dividend:
-        financial_details += (
-            f"\n🏦 Dividend       : ₹{dividend}/share"
-            )
+
+    financial_details = build_financial_details_for_telegram(
+        ai_summary
+    )
 
     summary_text = ""
 
@@ -594,6 +777,12 @@ def run_nse_filing_pipeline():
             ai_summary.update(order_details)
             ai_summary["financial_insights"] = (
                 financial_insights
+                )
+            ai_summary["financial_metrics"] = (
+                financial_metrics
+                )
+            ai_summary["financial_unit"] = (
+                financial_unit
                 )
         else:
             fallback_importance = 5

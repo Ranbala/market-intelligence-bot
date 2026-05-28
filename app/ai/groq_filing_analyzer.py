@@ -131,7 +131,7 @@ STRUCTURED EXTRACTED DATA:
 {json.dumps(structured_context, indent=2)}
 
 SMART EXTRACTED FILING TEXT:
-{text[:20000]}
+{text[:30000]}
 """
 
     response = groq_client.responses.create(

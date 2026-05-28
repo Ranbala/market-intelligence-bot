@@ -1,44 +1,100 @@
 import os
 import json
-from dotenv import load_dotenv
-from openai import OpenAI
 import re
 import time
 
-
-load_dotenv()
-# =========================================================
-# CEREBRAS SETUP
-# =========================================================
-cerebras_client = OpenAI(
-    api_key=os.getenv("CEREBRAS_API_KEY"),
-    base_url="https://api.cerebras.ai/v1"
+import requests
+from dotenv import (
+    find_dotenv,
+    load_dotenv
 )
-CEREBRAS_MODEL = "gpt-oss-120b"
 
 
-class CerebrasQuotaError(Exception):
+load_dotenv(
+    find_dotenv()
+)
+
+# =========================================================
+# OPENROUTER SETUP
+# =========================================================
+
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODELS = [
+    "deepseek/deepseek-v4-flash:free",
+    "openai/gpt-oss-20b:free",
+    "z-ai/glm-4.5-air:free",
+    "nvidia/nemotron-3-super:free",
+]
+
+
+class OpenRouterRateLimitError(Exception):
     pass
 
 
-def is_cerebras_quota_error(error):
+def build_openrouter_error(response):
 
-    error_text = str(error).lower()
+    try:
+        error_json = response.json().get(
+            "error",
+            {}
+        )
+        message = error_json.get(
+            "message",
+            "OpenRouter request failed"
+        )
+        metadata = error_json.get(
+            "metadata",
+            {}
+        )
+        raw_message = metadata.get(
+            "raw",
+            ""
+        )
+        provider_name = metadata.get(
+            "provider_name",
+            ""
+        )
 
-    return (
-        "token_quota_exceeded" in error_text
-        or "tokens per day limit exceeded" in error_text
-        or "too_many_tokens_error" in error_text
-        or "rate limit" in error_text
-        or "error code: 429" in error_text
-    )
+        error_parts = [
+            f"OpenRouter HTTP {response.status_code}",
+            message,
+        ]
+
+        if provider_name:
+            error_parts.append(
+                f"provider={provider_name}"
+            )
+
+        if raw_message:
+            error_parts.append(
+                raw_message
+            )
+
+        return " | ".join(error_parts)
+
+    except Exception:
+        return (
+            f"OpenRouter HTTP {response.status_code}: "
+            f"{response.text[:300]}"
+        )
 
 
 # =========================================================
 # ANALYZER
 # =========================================================
 
-def analyze_filing_with_cerebras(text,structured_context=None):
+def analyze_filing_with_openrouter(text, structured_context=None):
+
+    api_key = (
+        os.getenv("OPEN_ROUTER_API_KEY")
+        or os.getenv("OPENROUTER_API_KEY")
+    )
+
+    if not api_key:
+        raise Exception(
+            "OpenRouter API key missing. Add OPEN_ROUTER_API_KEY "
+            "to .env, or use OPENROUTER_API_KEY as an alias."
+        )
 
     prompt = f"""
 You are an expert Indian stock market filing analysis AI.
@@ -150,47 +206,84 @@ SMART EXTRACTED FILING TEXT:
 {text[:30000]}
     """
 
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://localhost",
+        "X-OpenRouter-Title": "Market Intelligence Bot",
+    }
+
     last_error = None
 
-    for attempt in range(3):
-        try:
-            response = cerebras_client.chat.completions.create(
-                model=CEREBRAS_MODEL,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=0.2,
-                max_tokens=15000
-            )
-            result = (
-                response
-                .choices[0]
-                .message
-                .content or ""
-            )
-            json_match = re.search(
-                r"\{.*\}",
-                result,
-                re.DOTALL
-            )
-            if json_match:
-                cleaned_json = json_match.group(0)
-                return json.loads(
-                    cleaned_json
+    for model in OPENROUTER_MODELS:
+
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "temperature": 0.2,
+            "max_tokens": 4000
+        }
+
+        for attempt in range(2):
+            try:
+                response = requests.post(
+                    OPENROUTER_API_URL,
+                    headers=headers,
+                    data=json.dumps(payload),
+                    timeout=(10, 90)
                 )
-            raise Exception(
-                "No valid JSON returned from Cerebras"
-            )
-        except Exception as e:
-            last_error = e
-            print(
-                f"Cerebras attempt "
-                f"{attempt + 1} failed: {e}"
-            )
-            if is_cerebras_quota_error(e):
-                raise CerebrasQuotaError(e)
-            time.sleep(3)
+
+                if response.status_code == 429:
+                    raise OpenRouterRateLimitError(
+                        build_openrouter_error(response)
+                    )
+
+                if response.status_code >= 400:
+                    raise Exception(
+                        build_openrouter_error(response)
+                    )
+
+                response_json = response.json()
+                result = (
+                    response_json
+                    .get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                )
+
+                json_match = re.search(
+                    r"\{.*\}",
+                    result,
+                    re.DOTALL
+                )
+
+                if json_match:
+                    cleaned_json = json_match.group(0)
+                    return json.loads(cleaned_json)
+
+                raise Exception(
+                    "No valid JSON returned from OpenRouter"
+                )
+
+            except OpenRouterRateLimitError as e:
+                last_error = e
+                print(
+                    "OpenRouter model rate-limited, "
+                    f"trying next model | model={model} | {e}"
+                )
+                break
+
+            except Exception as e:
+                last_error = e
+                print(
+                    f"OpenRouter model failed | model={model} | "
+                    f"attempt={attempt + 1} | {e}"
+                )
+                time.sleep(2)
+
     raise last_error

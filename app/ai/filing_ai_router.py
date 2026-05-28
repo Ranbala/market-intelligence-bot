@@ -5,6 +5,10 @@ from ai.cerebras_filing_analyzer import (
     analyze_filing_with_cerebras
 )
 
+from ai.openrouter_filing_analyzer import (
+    analyze_filing_with_openrouter
+)
+
 from ai.groq_filing_analyzer import (
     analyze_filing_with_groq
 )
@@ -55,6 +59,7 @@ def analyze_filing_with_llm(text,structured_context=None):
         print(text[:30000])
 
     cerebras_error = None
+    openrouter_error = None
     groq_error = None
     gemini_error = None
 
@@ -100,6 +105,28 @@ def analyze_filing_with_llm(text,structured_context=None):
 
         logger.error(
             f"GROQ Failed: {e}"
+        )
+
+    # =====================================================
+    # TRY OPENROUTER
+    # =====================================================
+
+    try:
+
+        logger.info(
+            "🛰️ Trying OpenRouter..."
+        )
+
+        return analyze_filing_with_openrouter(
+            text,structured_context
+        )
+
+    except Exception as e:
+
+        openrouter_error = e
+
+        logger.error(
+            f"OpenRouter Failed: {e}"
         )
 
     # =====================================================
