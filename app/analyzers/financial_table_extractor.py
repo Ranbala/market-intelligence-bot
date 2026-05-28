@@ -113,6 +113,90 @@ ROW_BOUNDARY_KEYWORDS = [
 # =========================================================
 
 
+def normalize_ocr_number_line(line):
+
+    line = line.replace("©", "(")
+    line = re.sub(
+        r"(\d[\d,]*)\s+\.(\d+)",
+        r"\1.\2",
+        line
+    )
+    # OCR sometimes reads Indian comma grouping as dots:
+    # "37.851.52" should be "37,851.52".
+    line = re.sub(
+        r"(?<![\d,])(\d{1,3})\.(\d{3})\.(\d{1,2})(?!\d)",
+        r"\1,\2.\3",
+        line
+    )
+
+    return line
+
+
+def repair_decimal_token(token, decimal_present):
+
+    if not decimal_present:
+        return token
+
+    if "." in token:
+        return token
+
+    is_negative = (
+        token.startswith("(")
+        and token.endswith(")")
+    )
+    clean_token = (
+        token
+        .replace("(", "")
+        .replace(")", "")
+    )
+
+    if not clean_token:
+        return token
+
+    if "," in clean_token:
+        comma_parts = clean_token.split(",")
+
+        if not all(part.isdigit() for part in comma_parts):
+            return token
+
+        last_part = comma_parts[-1]
+
+        if len(last_part) == 4:
+            repaired = (
+                "".join(comma_parts[:-1])
+                + last_part[:3]
+                + "."
+                + last_part[3:]
+            )
+        elif len(last_part) >= 5:
+            compact = "".join(comma_parts)
+            repaired = (
+                compact[:-2]
+                + "."
+                + compact[-2:]
+            )
+        else:
+            return token
+    else:
+        if (
+            not clean_token.isdigit()
+            or len(clean_token) < 3
+        ):
+            return token
+
+        repaired = (
+            clean_token[:-2]
+            + "."
+            + clean_token[-2:]
+        )
+
+    return (
+        f"({repaired})"
+        if is_negative
+        else repaired
+    )
+
+
 def normalize_financial_number(value):
 
     try:
@@ -181,12 +265,7 @@ def normalize_financial_number(value):
 
 def extract_numbers_from_line(line):
 
-    line = line.replace("©", "(")
-    line = re.sub(
-        r"(\d[\d,]*)\s+\.(\d+)",
-        r"\1.\2",
-        line
-    )
+    line = normalize_ocr_number_line(line)
 
     matches = re.findall(
         r"\(?\d[\d,]*\.?\d*\)?",
@@ -213,25 +292,10 @@ def extract_numbers_from_line(line):
         # Only repair if row already contains decimals
         # =========================================================
 
-        if (
+        value = repair_decimal_token(
+            value,
             decimal_present
-            and "." not in value
-            and len(value) >= 3
-        ):
-
-            repaired = (
-                value[:-2] + "." + value[-2:]
-            )
-
-            try:
-                repaired_float = float(repaired)
-
-                # Safety validation
-                if repaired_float < 1000:
-                    value = repaired
-
-            except Exception:
-                pass
+        )
         # Skip percentage-only lines
         if "%" in line and len(matches) == 1:
             continue
@@ -248,12 +312,7 @@ def extract_numbers_from_line(line):
 
 def extract_metric_value_tokens(line):
 
-    line = line.replace("©", "(")
-    line = re.sub(
-        r"(\d[\d,]*)\s+\.(\d+)",
-        r"\1.\2",
-        line
-    )
+    line = normalize_ocr_number_line(line)
 
     tokens = re.findall(
         r"\(?\d[\d,]*\.?\d*\)?|(?<![\w/])-+(?![\w/])",
@@ -274,39 +333,10 @@ def extract_metric_value_tokens(line):
             values.append(0.0)
             continue
 
-        if (
+        token = repair_decimal_token(
+            token,
             decimal_present
-            and "." not in token
-            and "," not in token
-            and len(token.replace("(", "").replace(")", "")) >= 3
-        ):
-            is_negative = (
-                token.startswith("(")
-                and token.endswith(")")
-            )
-            clean_token = (
-                token
-                .replace("(", "")
-                .replace(")", "")
-            )
-            repaired = (
-                clean_token[:-2]
-                + "."
-                + clean_token[-2:]
-            )
-
-            try:
-                repaired_float = float(repaired)
-
-                if repaired_float < 1000:
-                    token = (
-                        f"({repaired})"
-                        if is_negative
-                        else repaired
-                    )
-
-            except Exception:
-                pass
+        )
 
         normalized = normalize_financial_number(
             token
@@ -351,12 +381,19 @@ def score_metric_row(metric_name, raw_line, numbers):
     if metric_name == "profit_after_tax":
         if "net profit" in raw_lower:
             score += 10
+        if "after tax" in raw_lower:
+            score += 12
         if "profit for the period" in raw_lower:
             score += 8
         if "profit/ (loss) after tax" in raw_lower:
             score += 8
         if "profit for the year" in raw_lower:
             score += 5
+        if (
+            "net profit before" in raw_lower
+            or "profit before share" in raw_lower
+        ):
+            score -= 40
         if (
             "return on" in raw_lower
             or "ratio" in raw_lower
@@ -369,6 +406,11 @@ def score_metric_row(metric_name, raw_line, numbers):
             score += 8
         elif "finance cost" in raw_lower:
             score += 5
+        if (
+            "profit before depreciation" in raw_lower
+            or "finance income and tax" in raw_lower
+        ):
+            score -= 45
 
     if metric_name == "eps":
         if (
@@ -597,6 +639,22 @@ def extract_metric_numbers(
     numbers = extract_metric_value_tokens(
         value_text
     )
+
+    if (
+        metric_name == "eps"
+        and numbers
+        and "." not in value_text
+        and all(
+            number != 0
+            and abs(number) >= 10
+            and float(number).is_integer()
+            for number in numbers[:MAX_VALUES_PER_METRIC_ROW]
+        )
+    ):
+        numbers = [
+            round(number / 100, 2)
+            for number in numbers
+        ]
 
     return numbers[:MAX_VALUES_PER_METRIC_ROW]
 
