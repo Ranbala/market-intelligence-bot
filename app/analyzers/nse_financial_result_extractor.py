@@ -1,0 +1,348 @@
+import re
+
+
+FINANCIAL_RESULT_POSITIVE_KEYWORDS = {
+    "financial results": 12,
+    "audited standalone financial results": 18,
+    "unaudited standalone financial results": 18,
+    "audited consolidated financial results": 20,
+    "unaudited consolidated financial results": 20,
+    "revenue from operations": 12,
+    "profit/ (loss) after tax": 12,
+    "profit / (loss) after tax": 12,
+    "profit after tax": 10,
+    "profit before tax": 8,
+    "earnings per equity share": 8,
+    "segment revenue": 10,
+    "cash flow from operating": 9,
+    "statement of cash flow": 8,
+    "dividend": 6,
+    "unmodified opinion": 8,
+    "outcome of board meeting": 8,
+    "notes": 4,
+}
+
+
+FINANCIAL_RESULT_NEGATIVE_KEYWORDS = {
+    "independent auditor": 12,
+    "auditor's responsibilities": 12,
+    "auditors' responsibilities": 12,
+    "annexure": 10,
+    "companies auditor": 10,
+    "caro": 10,
+    "internal financial controls": 10,
+    "section 143": 8,
+    "audit procedures": 8,
+    "proper books of account": 8,
+    "true and fair view": 7,
+    "reasonable assurance": 7,
+}
+
+
+IMPORTANT_NOTE_KEYWORDS = [
+    "dividend",
+    "debt",
+    "default",
+    "recovered",
+    "bad debt",
+    "bad debts",
+    "exceptional",
+    "unmodified opinion",
+    "modified opinion",
+    "qualified opinion",
+    "resignation",
+    "subsidiary",
+    "associate",
+    "joint venture",
+    "material uncertainty",
+    "going concern",
+]
+
+
+MAX_RESULT_PAGES = 10
+MAX_NOTE_LINES = 12
+
+
+def get_page_analysis_text(page):
+
+    text = page.get("text", "") or ""
+    layout_text = page.get("layout_text", "") or ""
+
+    if not layout_text.strip():
+        return text
+
+    return (
+        text.strip()
+        + "\n\nLAYOUT TABLE TEXT:\n"
+        + layout_text.strip()
+    )
+
+
+FINANCIAL_UNIT_PATTERNS = [
+    {
+        "unit": "crores",
+        "display_unit": "Rs. crore",
+        "scale": 10000000,
+        "patterns": [
+            r"rs\.?\s*in\s*crores?",
+            r"rupees\s*in\s*crores?",
+            r"inr\s*in\s*crores?",
+            r"amount\s*in\s*crores?",
+            r"figures\s*in\s*crores?",
+            r"\bin\s*crores?\b",
+        ],
+    },
+    {
+        "unit": "lakhs",
+        "display_unit": "Rs. lakh",
+        "scale": 100000,
+        "patterns": [
+            r"rs\.?\s*in\s*lakhs?",
+            r"rs\.?\s*in\s*lacs?",
+            r"rs\.?\s*_?\s*in\s*lakhs?",
+            r"rs\.?\s*_?\s*in\s*lacs?",
+            r"rupees\s*in\s*lakhs?",
+            r"rupees\s*in\s*lacs?",
+            r"inr\s*in\s*lakhs?",
+            r"inr\s*in\s*lacs?",
+            r"amount\s*in\s*lakhs?",
+            r"amount\s*in\s*lacs?",
+            r"figures\s*in\s*lakhs?",
+            r"figures\s*in\s*lacs?",
+            r"\bin\s*lakhs?\b",
+            r"\bin\s*lacs?\b",
+        ],
+    },
+    {
+        "unit": "millions",
+        "display_unit": "Rs. million",
+        "scale": 1000000,
+        "patterns": [
+            r"rs\.?\s*in\s*millions?",
+            r"rupees\s*in\s*millions?",
+            r"inr\s*in\s*millions?",
+            r"amount\s*in\s*millions?",
+            r"figures\s*in\s*millions?",
+            r"\bin\s*millions?\b",
+        ],
+    },
+]
+
+
+def score_financial_result_page(page_text):
+
+    text_lower = (page_text or "").lower()
+
+    positive_score = sum(
+        score
+        for keyword, score in FINANCIAL_RESULT_POSITIVE_KEYWORDS.items()
+        if keyword in text_lower
+    )
+
+    negative_score = sum(
+        score
+        for keyword, score in FINANCIAL_RESULT_NEGATIVE_KEYWORDS.items()
+        if keyword in text_lower
+    )
+
+    return positive_score - negative_score
+
+
+def is_likely_financial_results_pdf(pages):
+
+    if not pages:
+        return False
+
+    combined_text = "\n".join(
+        get_page_analysis_text(page)
+        for page in pages[:8]
+    ).lower()
+
+    if (
+        "financial results" in combined_text
+        and (
+            "quarter ended" in combined_text
+            or "year ended" in combined_text
+            or "revenue from operations" in combined_text
+        )
+    ):
+        return True
+
+    for page in pages:
+        page_text = get_page_analysis_text(page).lower()
+        if (
+            "revenue from operations" in page_text
+            and "profit" in page_text
+            and (
+                "quarter ended" in page_text
+                or "year ended" in page_text
+            )
+        ):
+            return True
+
+    return False
+
+
+def select_financial_result_pages(pages):
+
+    scored_pages = []
+
+    for page in pages:
+
+        score = score_financial_result_page(
+            get_page_analysis_text(page)
+        )
+
+        if score <= 0:
+            continue
+
+        scored_pages.append({
+            "page_no": page.get("page_no"),
+            "score": score,
+            "text": page.get("text", ""),
+            "analysis_text": get_page_analysis_text(page),
+        })
+
+    scored_pages.sort(
+        key=lambda page: (
+            -page["score"],
+            page["page_no"] or 0
+        )
+    )
+
+    selected_pages = scored_pages[:MAX_RESULT_PAGES]
+
+    selected_pages.sort(
+        key=lambda page: page["page_no"] or 0
+    )
+
+    return selected_pages
+
+
+def detect_financial_unit_from_text(text):
+
+    for line in (text or "").splitlines():
+
+        clean_line = " ".join(
+            line.strip().split()
+        )
+
+        if not clean_line:
+            continue
+
+        line_lower = clean_line.lower()
+
+        for unit_config in FINANCIAL_UNIT_PATTERNS:
+
+            for pattern in unit_config["patterns"]:
+
+                if re.search(pattern, line_lower):
+                    return {
+                        "currency": "INR",
+                        "unit": unit_config["unit"],
+                        "display_unit": unit_config["display_unit"],
+                        "scale": unit_config["scale"],
+                        "source_line": clean_line,
+                    }
+
+    return {
+        "currency": "INR",
+        "unit": "unknown",
+        "display_unit": "reported units",
+        "scale": None,
+        "source_line": None,
+    }
+
+
+def detect_financial_unit_from_pages(pages):
+
+    selected_pages = select_financial_result_pages(
+        pages
+    )
+
+    selected_text = "\n".join(
+        page.get("analysis_text", page.get("text", ""))
+        for page in selected_pages
+    )
+
+    return detect_financial_unit_from_text(
+        selected_text
+    )
+
+
+def extract_important_financial_notes(pages):
+
+    important_lines = []
+    seen_lines = set()
+
+    for page in pages:
+
+        for line in page.get("text", "").splitlines():
+
+            clean_line = " ".join(
+                line.strip().split()
+            )
+
+            if len(clean_line) < 25:
+                continue
+
+            line_lower = clean_line.lower()
+
+            if clean_line in seen_lines:
+                continue
+
+            if any(
+                keyword in line_lower
+                for keyword in IMPORTANT_NOTE_KEYWORDS
+            ):
+                important_lines.append(
+                    clean_line
+                )
+                seen_lines.add(clean_line)
+
+            if len(important_lines) >= MAX_NOTE_LINES:
+                return important_lines
+
+    return important_lines
+
+
+def extract_financial_result_text_from_pages(pages):
+
+    if not pages:
+        return ""
+
+    selected_pages = select_financial_result_pages(
+        pages
+    )
+
+    if not selected_pages:
+        return ""
+
+    final_sections = []
+
+    for page in selected_pages:
+
+        header = (
+            f"--- PDF PAGE {page['page_no']} "
+            f"| RESULT PAGE SCORE {page['score']} ---"
+        )
+
+        final_sections.append(
+            f"{header}\n"
+            f"{page.get('analysis_text', page['text']).strip()}"
+        )
+
+    important_notes = extract_important_financial_notes(
+        selected_pages
+    )
+
+    if important_notes:
+        final_sections.append(
+            "IMPORTANT NOTES:\n"
+            + "\n".join(
+                f"- {note}"
+                for note in important_notes
+            )
+        )
+
+    return "\n\n".join(final_sections)

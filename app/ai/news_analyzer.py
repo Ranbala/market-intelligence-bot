@@ -151,7 +151,7 @@ def analyze_with_cerebras(prompt):
             }
         ],
         temperature=0.2,
-        max_tokens=500
+        max_tokens=1500
     )
 
     if (not response.choices or not response.choices[0].message):
@@ -170,7 +170,7 @@ def analyze_with_cerebras(prompt):
                 }
             ],
             temperature=0.2,
-            max_tokens=500
+            max_tokens=1500
         )
 
         result = response.choices[0].message.content

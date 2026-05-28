@@ -8,7 +8,10 @@ from fetchers.filing_filter import filter_important_filings
 from analyzers.filing_analyzer import analyze_filing
 from fetchers.pdf_extractor import (
     extract_pdf_text,
-    extract_pdf_text_from_bytes
+    extract_pdf_text_from_bytes,
+    extract_pdf_pages_from_bytes,
+    extract_pdf_pages_with_ocr_from_bytes,
+    is_text_extraction_poor
 )
 from analyzers.event_cluster import cluster_filings
 from ai.filing_ai_router import (
@@ -34,6 +37,33 @@ import time
 from concurrent.futures import (
     ThreadPoolExecutor,
     as_completed
+)
+from analyzers.smart_pdf_analyzer import (
+    extract_important_sections
+)
+from analyzers.nse_financial_result_extractor import (
+    extract_financial_result_text_from_pages,
+    is_likely_financial_results_pdf,
+    detect_financial_unit_from_pages
+)
+from analyzers.event_engine import (
+    extract_structured_events
+)
+from analyzers.filing_classifier import (
+    classify_filing
+)
+from analyzers.financial_table_extractor import (
+    extract_financial_metrics,
+    generate_financial_insights
+)
+from analyzers.earnings_ai_context_builder import (
+    build_earnings_ai_context
+)
+from analyzers.acquisition_ai_context_builder import (
+    build_acquisition_ai_context
+)
+from analyzers.order_extractor import (
+    extract_order_details
 )
 
 DEBUG_MODE = False
@@ -143,6 +173,73 @@ def format_filing_telegram_message(
         "summary_points",
         []
     )
+    
+    filing_type = ai_summary.get(
+        "filing_type",
+        "Unknown"
+        )
+    tradeability = ai_summary.get(
+        "tradeability",
+        "N/A"
+        )
+    client_name = ai_summary.get(
+        "client_name",""
+    )
+    order_value = ai_summary.get(
+        "order_value_crore",
+        ""
+    )
+    execution_period = ai_summary.get(
+        "execution_period",
+        ""
+    )
+    financial_insights = ai_summary.get(
+        "financial_insights",
+        {}
+        )
+    revenue_growth = financial_insights.get(
+        "revenue_growth_pct"
+        )
+    pat_growth = financial_insights.get(
+        "pat_growth_pct"
+        )
+    eps_growth = financial_insights.get(
+        "eps_growth_pct"
+        )
+    dividend = financial_insights.get(
+        "dividend_per_share"
+        )
+    
+    extra_details = ""
+    if client_name:
+        extra_details += (
+            f"\n🤝 Client       : {client_name}"
+            )
+    if order_value:
+        extra_details += (
+            f"\n💰 Order Value  : ₹{order_value} Cr"
+            )
+    if execution_period:
+        extra_details += (
+            f"\n⏳ Execution    : {execution_period}"
+            )
+    financial_details = ""
+    if revenue_growth:
+        financial_details += (
+            f"\n📊 Revenue Growth : +{round(revenue_growth, 2)}% YoY"
+            )
+    if pat_growth:
+        financial_details += (
+            f"\n💹 PAT Growth     : +{round(pat_growth, 2)}% YoY"
+            )
+    if eps_growth:
+        financial_details += (
+            f"\n💰 EPS Growth     : +{round(eps_growth, 2)}% YoY"
+            )
+    if dividend:
+        financial_details += (
+            f"\n🏦 Dividend       : ₹{dividend}/share"
+            )
 
     summary_text = ""
 
@@ -162,17 +259,21 @@ def format_filing_telegram_message(
 
 🏢 Stock        : {stock}
 🏛 Company      : {company}
+
+📂 Filing Type  : {filing_type}
+
 📌 Event        : {event}
 📈 Sentiment    : {sentiment}
 🔥 Importance   : {importance}/10
+⚡ Tradeability : {tradeability}/10
+{extra_details}
+{financial_details}
 🕒 NSE Time     : {exchange_time}
 {important_dates}
-🤖 AI EVENT SUMMARY:
-
+🤖 EVENT SUMMARY:
 {summary_text}
 ⚡ Market Impact:
 {market_impact}
-
 🎯 Key Event:
 {event}
 """
@@ -304,6 +405,7 @@ def run_nse_filing_pipeline():
             print("#" * 100)
 
         combined_pdf_text = ""
+        combined_pdf_pages = []
 
         sorted_cluster = sorted(
             cluster_filings_list,
@@ -357,12 +459,34 @@ def run_nse_filing_pipeline():
                     )
                     continue
 
-                pdf_text = extract_pdf_text_from_bytes(
+                pdf_pages = extract_pdf_pages_from_bytes(
                     pdf_bytes
                 )
 
+                if is_text_extraction_poor(pdf_pages):
+                    pdf_pages = extract_pdf_pages_with_ocr_from_bytes(
+                        pdf_bytes,
+                        existing_pages=pdf_pages
+                    )
+
+                if pdf_pages:
+                    combined_pdf_pages.extend(
+                        pdf_pages
+                    )
+
+                    pdf_text = "\n".join(
+                        page["text"]
+                        for page in pdf_pages
+                        if page.get("text")
+                    )
+
+                else:
+                    pdf_text = extract_pdf_text_from_bytes(
+                        pdf_bytes
+                    )
+
                 combined_pdf_text += (
-                    "\n\n" + pdf_text[:8000]
+                    "\n\n" + pdf_text
                 )
 
         if not combined_pdf_text.strip():
@@ -376,10 +500,101 @@ def run_nse_filing_pipeline():
             combined_pdf_text
         )
 
-        if combined_pdf_text.strip():
-            ai_summary = analyze_filing_with_llm(
-                combined_pdf_text
+        if is_likely_financial_results_pdf(
+            combined_pdf_pages
+        ):
+            smart_text = extract_financial_result_text_from_pages(
+                combined_pdf_pages
             )
+            financial_unit = detect_financial_unit_from_pages(
+                combined_pdf_pages
+            )
+        else:
+            smart_text = extract_important_sections(
+                combined_pdf_text
+                )
+            financial_unit = {
+                "currency": "INR",
+                "unit": "unknown",
+                "display_unit": "reported units",
+                "scale": None,
+                "source_line": None,
+            }
+        if smart_text.strip():
+            structured_events = extract_structured_events(
+                smart_text
+                )
+            filing_type_result = classify_filing(
+                smart_text
+                )
+            financial_metrics = {}
+            financial_insights = {}
+            order_details = {}
+            
+            if filing_type_result["filing_type"] == "earnings":
+                financial_metrics = extract_financial_metrics(
+                    smart_text
+                    )
+            
+                financial_insights = generate_financial_insights(
+                    financial_metrics
+                    )
+            
+            if filing_type_result["filing_type"] == "order_win":
+                order_details = extract_order_details(
+                    smart_text
+                    )
+
+            structured_context = {
+                "structured_events": structured_events,
+                "filing_analysis": analyzed,
+                "filing_type": filing_type_result,
+                "financial_unit": financial_unit,
+                "financial_metrics": financial_metrics,
+                "financial_insights": financial_insights,
+                "order_details": order_details
+                }
+
+            ai_input_text = smart_text
+
+            if filing_type_result["filing_type"] == "earnings":
+                ai_input_text = build_earnings_ai_context(
+                    smart_text,
+                    structured_context
+                )
+
+            if filing_type_result["filing_type"] in [
+                "acquisition",
+                "open_offer",
+            ]:
+                ai_input_text = build_acquisition_ai_context(
+                    combined_pdf_text,
+                    structured_context
+                )
+
+            ai_summary = analyze_filing_with_llm(
+                ai_input_text,
+                structured_context
+                )
+            # =====================================================
+            # ENRICH AI SUMMARY WITH STRUCTURED DATA
+            # =====================================================
+            
+            primary_event = {}
+            if structured_events.get("events"):
+                primary_event = structured_events["events"][0]
+            ai_summary["filing_type"] = filing_type_result.get(
+                "filing_type",
+                "Unknown"
+            )
+            ai_summary["tradeability"] = primary_event.get(
+                "tradeability",
+                "N/A"
+            )
+            ai_summary.update(order_details)
+            ai_summary["financial_insights"] = (
+                financial_insights
+                )
         else:
             fallback_importance = 5
             fallback_sentiment = "Neutral"
@@ -480,17 +695,36 @@ def run_nse_filing_pipeline():
                 exchange_time
             )
 
-            save_filing_hash(
-                symbol=primary_filing["symbol"],
-                file_hash=file_hash,
-                normalized_hash=None,
-                source_url=pdf_url,
-                file_name=pdf_url.split("/")[-1],
-                exchange_time=exchange_time,
-                processing_status="SUCCESS",
-                ai_processed=1,
-                ai_provider=None
-            )
+        for filing in cluster_filings_list:
+            pdf_url = filing.get("attchmntFile", "")
+            
+            if not pdf_url:
+                continue
+            try:
+                pdf_bytes = requests.get(
+                    pdf_url,
+                    timeout=(10, 60),
+                    headers={
+                        "User-Agent": "Mozilla/5.0"
+                        }
+                        ).content
+                file_hash = hashlib.sha256(
+                        pdf_bytes
+                        ).hexdigest()
+                save_filing_hash(
+                    symbol=primary_filing["symbol"],
+                    file_hash=file_hash,
+                    normalized_hash=None,
+                    source_url=pdf_url,
+                    file_name=pdf_url.split("/")[-1],
+                    exchange_time=exchange_time,
+                    processing_status="SUCCESS",
+                    ai_processed=1,
+                    ai_provider=None
+                    )
+            except Exception as e:
+                print(f"❌ HASH SAVE FAILED: {pdf_url}")
+                print(str(e))
 
     print("\n✅ Filing intelligence engine completed successfully.\n")
 

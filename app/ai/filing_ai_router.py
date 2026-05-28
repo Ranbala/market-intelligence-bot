@@ -13,12 +13,46 @@ from ai.gemini_filing_analyzer import (
     analyze_filing_with_gemini
 )
 
+DEBUG_PRINT_AI_TEXT = False
+DEBUG_PRINT_AI_SIZE = True
+
+
+def estimate_tokens(text):
+
+    return round(
+        len(text or "") / 4
+    )
+
 
 # =========================================================
 # MAIN ROUTER
 # =========================================================
 
-def analyze_filing_with_llm(text):
+def analyze_filing_with_llm(text,structured_context=None):
+
+    if DEBUG_PRINT_AI_SIZE:
+
+        context_text = json.dumps(
+            structured_context,
+            default=str
+        )
+
+        logger.info(
+            "AI input size | "
+            f"text_chars={len(text or '')} | "
+            f"text_est_tokens={estimate_tokens(text)} | "
+            f"context_est_tokens={estimate_tokens(context_text)} | "
+            f"total_est_tokens="
+            f"{estimate_tokens(text) + estimate_tokens(context_text)}"
+        )
+
+    if DEBUG_PRINT_AI_TEXT:
+
+        print("\n" + "="*100)
+        #print("TEXT SENT TO AI")
+        print("="*100)
+
+        print(text[:30000])
 
     cerebras_error = None
     groq_error = None
@@ -35,7 +69,7 @@ def analyze_filing_with_llm(text):
         )
 
         return analyze_filing_with_cerebras(
-            text
+            text,structured_context
         )
 
     except Exception as e:
@@ -57,7 +91,7 @@ def analyze_filing_with_llm(text):
         )
 
         return analyze_filing_with_groq(
-            text
+            text,structured_context
         )
 
     except Exception as e:
@@ -79,7 +113,7 @@ def analyze_filing_with_llm(text):
         )
 
         return analyze_filing_with_gemini(
-            text
+            text,structured_context
         )
 
     except Exception as e:
@@ -100,37 +134,69 @@ def analyze_filing_with_llm(text):
 
     fallback_importance = 5
     fallback_sentiment = "Neutral"
+    fallback_key_event = "Corporate Filing"
 
     text_lower = text.lower()
+    structured_context = structured_context or {}
+    filing_type = (
+        structured_context
+        .get("filing_type", {})
+        .get("filing_type")
+    )
+    financial_metrics = structured_context.get(
+        "financial_metrics",
+        {}
+    )
 
-    if "financial results" in text_lower:
-        fallback_importance = 9
-        fallback_sentiment = "Positive"
+    if (
+        filing_type == "earnings"
+        or "financial results" in text_lower
+    ):
+        fallback_importance = 5
+        fallback_sentiment = "Neutral"
+        fallback_key_event = "Financial results filing"
+
+        if financial_metrics:
+            fallback_importance = 6
 
     if "dividend" in text_lower:
         fallback_importance = max(
             fallback_importance,
             8
         )
+        fallback_sentiment = "Positive"
+        fallback_key_event = "Dividend-related filing"
 
-    if "acquisition" in text_lower:
+    if (
+        filing_type in ["acquisition", "open_offer"]
+        or "open offer" in text_lower
+        or "change of control" in text_lower
+        or "acquisition" in text_lower
+    ):
         fallback_importance = max(
             fallback_importance,
             9
         )
         fallback_sentiment = "Positive"
+        fallback_key_event = "Acquisition / open offer filing"
 
-    if "board meeting" in text_lower:
+    if (
+        "board meeting" in text_lower
+        and filing_type not in ["earnings", "acquisition", "open_offer"]
+    ):
         fallback_importance = max(
             fallback_importance,
             7
         )
+        fallback_key_event = "Board meeting outcome"
 
     if "qip" in text_lower:
         fallback_importance = max(
             fallback_importance,
             8
         )
+        fallback_sentiment = "Positive"
+        fallback_key_event = "Fund raising filing"
 
     if "cirp" in text_lower:
         fallback_importance = max(
@@ -138,6 +204,7 @@ def analyze_filing_with_llm(text):
             9
         )
         fallback_sentiment = "Negative"
+        fallback_key_event = "CIRP / insolvency filing"
 
     return {
         "summary_points": [
@@ -149,5 +216,5 @@ def analyze_filing_with_llm(text):
             "Important filing detected via "
             "rule-based engine."
         ),
-        "key_event": "Corporate Filing"
+        "key_event": fallback_key_event
     }
