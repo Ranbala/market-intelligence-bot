@@ -60,7 +60,7 @@ from ai.filing_ai_router import (
 # ==========================================
 
 PDF_PATH = (
-    "/Users/balakumarmoorthy/Downloads/Atcom1_28052026164404_Financial_with_Covering_Letter.pdf"
+    "/Users/balakumarmoorthy/Downloads/NSE Filings reprocess/BATAINDIA_27052026190204_SE-Outcome-May27-2026_signed.pdf"
 )
 
 if len(sys.argv) > 1:

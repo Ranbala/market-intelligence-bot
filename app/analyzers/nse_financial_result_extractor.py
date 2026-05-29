@@ -3,15 +3,31 @@ import re
 
 FINANCIAL_RESULT_POSITIVE_KEYWORDS = {
     "financial results": 12,
+    "flnanclal results": 12,
+    "statement or financial results": 12,
+    "statement of flnanclal results": 12,
     "audited standalone financial results": 18,
     "unaudited standalone financial results": 18,
     "audited consolidated financial results": 20,
     "unaudited consolidated financial results": 20,
     "revenue from operations": 12,
+    "revenue rrom operations": 12,
+    "re'lenue rrom operations": 12,
+    "revc¡uc": 10,
+    "iìcr cnuc": 10,
     "profit/ (loss) after tax": 12,
     "profit / (loss) after tax": 12,
     "profit after tax": 10,
     "profit before tax": 8,
+    "net profit for the period": 10,
+    "net prom lor lhe period": 10,
+    "nef profit": 10,
+    "nel profit": 10,
+    "profit/lloss": 8,
+    "total income": 8,
+    "fntnl ¡ncon": 8,
+    "lì)trl income": 8,
+    "finance costs": 6,
     "earnings per equity share": 8,
     "segment revenue": 10,
     "cash flow from operating": 9,
@@ -85,6 +101,7 @@ FINANCIAL_UNIT_PATTERNS = [
         "scale": 10000000,
         "patterns": [
             r"rs\.?\s*in\s*crores?",
+            r"in\s*rs\.?\s*crores?",
             r"rupees\s*in\s*crores?",
             r"inr\s*in\s*crores?",
             r"amount\s*in\s*crores?",
@@ -99,6 +116,8 @@ FINANCIAL_UNIT_PATTERNS = [
         "patterns": [
             r"rs\.?\s*in\s*lakhs?",
             r"rs\.?\s*in\s*lacs?",
+            r"in\s*rs\.?\s*lakhs?",
+            r"in\s*rs\.?\s*lacs?",
             r"rs\.?\s*_?\s*in\s*lakhs?",
             r"rs\.?\s*_?\s*in\s*lacs?",
             r"rupees\s*in\s*lakhs?",
@@ -119,6 +138,7 @@ FINANCIAL_UNIT_PATTERNS = [
         "scale": 1000000,
         "patterns": [
             r"rs\.?\s*in\s*millions?",
+            r"in\s*rs\.?\s*millions?",
             r"rupees\s*in\s*millions?",
             r"inr\s*in\s*millions?",
             r"amount\s*in\s*millions?",
@@ -146,6 +166,67 @@ def score_financial_result_page(page_text):
     )
 
     return positive_score - negative_score
+
+
+def is_table_shaped_financial_result_page(page_text):
+
+    text_lower = (page_text or "").lower()
+
+    has_period_headers = (
+        "quarter ended" in text_lower
+        and "year ended" in text_lower
+    )
+
+    has_unit_line = any(
+        marker in text_lower
+        for marker in [
+            "rs. in lakh",
+            "rs in lakh",
+            "rs. in lakhs",
+            "rs in lakhs",
+            "rs. in crore",
+            "rs in crore",
+            "rs. in million",
+            "rs in million",
+            "inr in million",
+            "in lakhs",
+            "in lacs",
+        ]
+    )
+
+    has_result_row = any(
+        marker in text_lower
+        for marker in [
+            "revenue from operations",
+            "revenue rrom operations",
+            "re'lenue rrom operations",
+            "total income",
+            "profit before tax",
+            "net profit",
+            "net prom",
+            "earnings per equity share",
+        ]
+    )
+
+    has_statement_title = any(
+        marker in text_lower
+        for marker in [
+            "statement of financial results",
+            "statement or financial results",
+            "statement of flnanclal results",
+            "statement or flnanclal results",
+        ]
+    )
+
+    return (
+        has_period_headers
+        and has_unit_line
+        and has_result_row
+        and (
+            has_statement_title
+            or "particulars" in text_lower
+        )
+    )
 
 
 def is_likely_financial_results_pdf(pages):
@@ -193,8 +274,13 @@ def select_financial_result_pages(pages):
             get_page_analysis_text(page)
         )
 
-        if score <= 0:
+        if score <= 0 and not is_table_shaped_financial_result_page(
+            get_page_analysis_text(page)
+        ):
             continue
+
+        if score <= 0:
+            score = 15
 
         scored_pages.append({
             "page_no": page.get("page_no"),
@@ -221,6 +307,9 @@ def select_financial_result_pages(pages):
 
 def detect_financial_unit_from_text(text):
 
+    best_candidate = None
+    best_score = -1
+
     for line in (text or "").splitlines():
 
         clean_line = " ".join(
@@ -237,13 +326,50 @@ def detect_financial_unit_from_text(text):
             for pattern in unit_config["patterns"]:
 
                 if re.search(pattern, line_lower):
-                    return {
+                    score = 1
+
+                    if any(
+                        marker in line_lower
+                        for marker in [
+                            "unless otherwise stated",
+                            "except per share",
+                            "except per share data",
+                        ]
+                    ):
+                        score += 50
+
+                    if re.search(
+                        r"^\(?\s*(rs\.?|rupees|inr|in\s+rs\.?)",
+                        line_lower
+                    ):
+                        score += 10
+
+                    if any(
+                        marker in line_lower
+                        for marker in [
+                            "financial results",
+                            "statement of",
+                            "particulars",
+                        ]
+                    ):
+                        score += 5
+
+                    candidate = {
                         "currency": "INR",
                         "unit": unit_config["unit"],
                         "display_unit": unit_config["display_unit"],
                         "scale": unit_config["scale"],
                         "source_line": clean_line,
                     }
+
+                    if score > best_score:
+                        best_candidate = candidate
+                        best_score = score
+
+                    break
+
+    if best_candidate:
+        return best_candidate
 
     return {
         "currency": "INR",

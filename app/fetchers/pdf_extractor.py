@@ -9,8 +9,9 @@ from PyPDF2 import PdfReader
 MAX_PDF_TEXT_CHARS = 15000
 MIN_USEFUL_PDF_TEXT_CHARS = 5000
 MIN_TEXT_PAGE_RATIO = 0.5
-OCR_RENDER_ZOOM = 2
+OCR_RENDER_ZOOM = 3
 OCR_MAX_PAGES = 40
+OCR_ROTATIONS = [0, 90, 270]
 
 
 def _build_page_result(page_no, text, layout_text=""):
@@ -104,15 +105,24 @@ def is_text_extraction_poor(pages):
         for page in pages
         if page.get("char_count", 0) >= 100
     )
+    garbled_pages = sum(
+        1
+        for page in pages
+        if is_page_text_garbled_for_ocr(
+            page.get("text", "")
+        )
+    )
 
     if total_pages < 5:
-        return False
+        return garbled_pages > 0
 
     text_page_ratio = text_pages / total_pages
+    garbled_page_ratio = garbled_pages / total_pages
 
     return (
         total_chars < MIN_USEFUL_PDF_TEXT_CHARS
         or text_page_ratio < MIN_TEXT_PAGE_RATIO
+        or garbled_page_ratio >= 0.1
     )
 
 
@@ -127,6 +137,88 @@ def is_ocr_available():
 
     except Exception:
         return False
+
+
+def is_page_text_garbled_for_ocr(text):
+
+    clean_text = text or ""
+
+    if len(clean_text.strip()) < 100:
+        return True
+
+    non_ascii_chars = sum(
+        1
+        for char in clean_text
+        if ord(char) > 127
+    )
+    visible_chars = sum(
+        1
+        for char in clean_text
+        if not char.isspace()
+    )
+
+    if visible_chars and (non_ascii_chars / visible_chars) > 0.03:
+        return True
+
+    garbled_markers = [
+        "§",
+        "¡",
+        "ì",
+        "þ",
+        "¿",
+        "gIg",
+        "esses]",
+        "—ro",
+        "l)cr¡od",
+        "dcr¡od",
+        "or)caxtrons",
+    ]
+
+    if any(marker in clean_text for marker in garbled_markers):
+        return True
+
+    lines = [
+        line.strip()
+        for line in clean_text.splitlines()
+        if line.strip()
+    ]
+
+    if not lines:
+        return True
+
+    short_noise_lines = sum(
+        1
+        for line in lines
+        if len(line) <= 3
+        and not any(char.isdigit() for char in line)
+    )
+
+    return (
+        len(lines) > 40
+        and (short_noise_lines / len(lines)) > 0.35
+    )
+
+
+def score_ocr_text(text):
+
+    clean_text = text or ""
+    lower_text = clean_text.lower()
+
+    score = len(clean_text.strip())
+
+    for keyword in [
+        "revenue",
+        "operations",
+        "total income",
+        "profit",
+        "finance",
+        "quarter",
+        "year ended",
+    ]:
+        if keyword in lower_text:
+            score += 500
+
+    return score
 
 
 def extract_pdf_pages_with_ocr_from_bytes(
@@ -193,8 +285,11 @@ def extract_pdf_pages_with_ocr_from_bytes(
                 ""
             )
 
-            # Keep already-useful text pages. OCR only blank/scanned pages.
-            if len(existing_text.strip()) >= 100:
+            # Keep already-useful text pages. OCR blank/scanned/garbled pages.
+            if (
+                len(existing_text.strip()) >= 100
+                and not is_page_text_garbled_for_ocr(existing_text)
+            ):
                 pages.append(
                     _build_page_result(
                         page_no,
@@ -222,9 +317,32 @@ def extract_pdf_pages_with_ocr_from_bytes(
                 pixmap.samples
             )
 
-            ocr_text = pytesseract.image_to_string(
-                image,
-                config="--psm 6"
+            ocr_candidates = []
+
+            for rotation in OCR_ROTATIONS:
+
+                rotated_image = (
+                    image
+                    if rotation == 0
+                    else image.rotate(
+                        rotation,
+                        expand=True
+                    )
+                )
+
+                ocr_text = pytesseract.image_to_string(
+                    rotated_image,
+                    config="--psm 6"
+                )
+
+                ocr_candidates.append(
+                    ocr_text
+                )
+
+            ocr_text = max(
+                ocr_candidates,
+                key=score_ocr_text,
+                default=""
             )
 
             pages.append(

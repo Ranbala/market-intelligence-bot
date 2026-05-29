@@ -9,18 +9,33 @@ FINANCIAL_METRIC_PATTERNS = {
         "total revenue from operation",
         "total revenue from operations",
         "revenue from operations",
+        "revenue rrom operations",
+        "re'lenue rrom operations",
         "revenue o operations",
         "rt venue from operations",
         "venue from operations",
+        "revc¡uc",
+        "revenue lir",
+        "iìcr cnuc",
+        "rìcr cnuc",
     ],
 
     "total_income": [
         "total income",
         "total tncome",
+        "tol•i income",
+        "tola i income",
+        "fntnl ¡ncon",
+        "lì)trl income",
+        "trl income",
     ],
 
     "profit_before_tax": [
+        "pront before tax",
         "profit before tax",
+        "profit/lloss",
+        "profit/fl.nssl",
+        "profit/loss",
         "prqfit before",
         "pr fit before",
         "puofit before tax",
@@ -34,7 +49,12 @@ FINANCIAL_METRIC_PATTERNS = {
     "profit_after_tax": [
         "profit for the period",
         "profit for the period / year",
+        "profit for the period/ year",
         "profit for the period/year",
+        "profit/(loss) for the period",
+        "profit / (loss) for the period",
+        "profit/ (loss) for the period after taxes",
+        "profit / (loss) for the period after taxes",
         "profit for the year",
         "net profit/(loss)",
         "net profit / (loss)",
@@ -42,6 +62,14 @@ FINANCIAL_METRIC_PATTERNS = {
         "profit/ (los) after tax",
         "profit/ (lins) after tax",
         "profit/ (ss) for the year",
+        "not profit after tax",
+        "net prom lor lhe period",
+        "net profit for the period",
+        "nef profit",
+        "nel profit",
+        "profit/lloss",
+        "profit/fl,oss",
+        "profit/loss",
         "profit after tax",
         "net profit",
     ],
@@ -52,11 +80,13 @@ FINANCIAL_METRIC_PATTERNS = {
 
     "eps": [
         "earnings per share",
-        "eps",
+        "basic eps",
+        "diluted eps",
     ],
 
     "finance_cost": [
         "finance costs",
+        "fln:jnce costs",
         "finance cost",
     ]
 }
@@ -65,6 +95,7 @@ FINANCIAL_METRIC_PATTERNS = {
 NUMBER_PATTERN = r"\d[\d,]*\.?\d*"
 MAX_ROW_LOOKAHEAD_LINES = 18
 MAX_VALUES_PER_METRIC_ROW = 5
+MAX_RAW_VALUES_PER_METRIC_ROW = 12
 FINANCIAL_RESULT_PERIOD_LABELS = [
     "quarter_current",
     "quarter_previous",
@@ -116,15 +147,76 @@ ROW_BOUNDARY_KEYWORDS = [
 def normalize_ocr_number_line(line):
 
     line = line.replace("©", "(")
+
+    def repair_ocr_numeric_token(match):
+
+        token = match.group(0)
+
+        if (
+            not re.search(r"\d|[,◄&]", token)
+            and not token.lower().startswith("ss,")
+        ):
+            return token
+
+        # Very common OCR confusions inside table numbers only.
+        if token.lower().startswith("ss,"):
+            token = "58," + token[3:]
+
+        replacements = {
+            "S": "5",
+            "s": "5",
+            "I": "1",
+            "l": "1",
+            "◄": "4",
+            "&": "8",
+            "e": "6",
+        }
+
+        if any(
+            char.isalpha()
+            and char not in replacements
+            for char in token
+        ):
+            return token
+
+        repaired = "".join(
+            replacements.get(char, char)
+            for char in token
+        )
+
+        if re.search(r"\d", repaired):
+            return repaired
+
+        return token
+
+    line = re.sub(
+        r"(?<![A-Za-z])[A-Za-z\d,.\-◄&]{2,}(?![A-Za-z])",
+        repair_ocr_numeric_token,
+        line
+    )
     line = re.sub(
         r"(\d[\d,]*)\s+\.(\d+)",
         r"\1.\2",
+        line
+    )
+    # OCR sometimes reads decimal dots as hyphens:
+    # "7,843-32" should be "7,843.32".
+    line = re.sub(
+        r"(?<=\d)-(?=\d{2}\b)",
+        ".",
         line
     )
     # OCR sometimes reads Indian comma grouping as dots:
     # "37.851.52" should be "37,851.52".
     line = re.sub(
         r"(?<![\d,])(\d{1,3})\.(\d{3})\.(\d{1,2})(?!\d)",
+        r"\1,\2.\3",
+        line
+    )
+    # Same issue, but with the decimal part split by whitespace:
+    # "15.682 47" should be "15,682.47".
+    line = re.sub(
+        r"(?<![\d,])(\d{1,3})\.(\d{3})\s+(\d{1,2})(?!\d)",
         r"\1,\2.\3",
         line
     )
@@ -161,7 +253,19 @@ def repair_decimal_token(token, decimal_present):
 
         last_part = comma_parts[-1]
 
-        if len(last_part) == 4:
+        if (
+            len(comma_parts) == 3
+            and len(comma_parts[0]) == 1
+            and len(comma_parts[1]) == 3
+            and len(comma_parts[2]) == 3
+        ):
+            repaired = (
+                comma_parts[0]
+                + comma_parts[1]
+                + "."
+                + comma_parts[2]
+            )
+        elif len(last_part) == 4:
             repaired = (
                 "".join(comma_parts[:-1])
                 + last_part[:3]
@@ -314,10 +418,16 @@ def extract_metric_value_tokens(line):
 
     line = normalize_ocr_number_line(line)
 
-    tokens = re.findall(
-        r"\(?\d[\d,]*\.?\d*\)?|(?<![\w/])-+(?![\w/])",
-        line
+    token_matches = list(
+        re.finditer(
+            r"\(?\d[\d,]*\.?\d*\)?|(?<![\w/])-+(?![\w/])",
+            line
+        )
     )
+    tokens = [
+        match.group(0)
+        for match in token_matches
+    ]
 
     decimal_present = any(
         "." in token
@@ -327,9 +437,23 @@ def extract_metric_value_tokens(line):
 
     values = []
 
-    for token in tokens:
+    for match in token_matches:
+
+        token = match.group(0)
 
         if re.fullmatch(r"-+", token):
+            previous_text = line[:match.start()].rstrip()
+            next_text = line[match.end():].lstrip()
+
+            if (
+                previous_text
+                and previous_text[-1].isalpha()
+            ) or (
+                next_text
+                and next_text[0].isalpha()
+            ):
+                continue
+
             values.append(0.0)
             continue
 
@@ -373,13 +497,36 @@ def score_metric_row(metric_name, raw_line, numbers):
             score += 5
 
     if metric_name == "profit_before_tax":
-        if "profit before tax" in raw_lower:
+        if (
+            "profit before tax" in raw_lower
+            or "pront before tax" in raw_lower
+        ):
             score += 8
         if "profit/ (loss)" in raw_lower:
             score += 4
 
     if metric_name == "profit_after_tax":
+        if "attributable" in raw_lower:
+            score -= 120
+        if (
+            (
+                "net profit before" in raw_lower
+                or "profit before" in raw_lower
+                or re.search(
+                    r"profit.{0,40}before",
+                    raw_lower
+                )
+                or "adjustments to reconcile net profit" in raw_lower
+            )
+            and "after tax" not in raw_lower
+            and "profit for the period" not in raw_lower
+            and "profit/(loss) for the period" not in raw_lower
+            and "profit / (loss) for the period" not in raw_lower
+        ):
+            score -= 150
         if "net profit" in raw_lower:
+            score += 10
+        if "net prom" in raw_lower:
             score += 10
         if "after tax" in raw_lower:
             score += 12
@@ -403,6 +550,8 @@ def score_metric_row(metric_name, raw_line, numbers):
 
     if metric_name == "finance_cost":
         if "finance costs" in raw_lower:
+            score += 8
+        elif "fln:jnce costs" in raw_lower:
             score += 8
         elif "finance cost" in raw_lower:
             score += 5
@@ -432,6 +581,40 @@ def score_metric_row(metric_name, raw_line, numbers):
     ):
         score -= 50
 
+    if any(
+        pattern in raw_lower
+        for pattern in [
+            "layout table text",
+            "regd. office",
+            "registered office",
+            "telephone",
+            "e-mail",
+            "website",
+            "cin:",
+            "cscs",
+            "hws]",
+            "bott",
+            "bolts",
+            "—~",
+        ]
+    ):
+        score -= 80
+
+    if any(
+        pattern in raw_lower
+        for pattern in [
+            "adjustments for",
+            "adjustments to reconcile",
+            "cash flow",
+            "profit) / loss on sale",
+            "(profit) / loss on sale",
+            "gain on cancellation",
+            "sundry creditors written",
+            "slindry creditors written",
+        ]
+    ):
+        score -= 80
+
     if (
         metric_name in [
             "revenue",
@@ -440,7 +623,7 @@ def score_metric_row(metric_name, raw_line, numbers):
         ]
         and "segment" in raw_lower
     ):
-        score -= 35
+        score -= 90
 
     if "cash flow" in raw_lower:
         score -= 35
@@ -454,6 +637,12 @@ def extract_numbers_for_row_completion(row_text):
         r"[\(\[\{]?\s*\d+\s*[-+·]\s*\d+\s*[\)\]\}]?",
         " ",
         row_text
+    )
+    row_text = re.sub(
+        r"[\(\[\{]\s*[ivx\d]+\s*[\)\]\}]",
+        " ",
+        row_text,
+        flags=re.IGNORECASE
     )
 
     return extract_numbers_from_line(
@@ -497,11 +686,35 @@ def strip_metric_prefix(row_text, metric_name, matched_keyword):
         keyword_index + len(matched_keyword):
     ]
 
+    # Remove bracketed row formulas before OCR decimal repair so formulas
+    # such as (11-12) are not rewritten as 11.12.
+    value_text = re.sub(
+        r"[\(\[\{]\s*\d+\s*[-+·]\s*\d+\s*[\)\]\}]",
+        " ",
+        value_text
+    )
+    value_text = re.sub(
+        r"[\(\[\{]\s*[ivx\d]+\s*[\)\]\}]",
+        " ",
+        value_text,
+        flags=re.IGNORECASE
+    )
+
+    value_text = normalize_ocr_number_line(
+        value_text
+    )
+
     # Remove row formulas like (1+2), (3-4), {5+6}, or 7·8.
     value_text = re.sub(
         r"[\(\[\{]?\s*\d+\s*[-+·]\s*\d+\s*[\)\]\}]?",
         " ",
         value_text
+    )
+    value_text = re.sub(
+        r"[\(\[\{]\s*[ivxlj\d\s+·-]{2,}\s*[\)\]\}]",
+        " ",
+        value_text,
+        flags=re.IGNORECASE
     )
 
     if metric_name == "eps":
@@ -529,7 +742,13 @@ def strip_metric_prefix(row_text, metric_name, matched_keyword):
                 ]
 
         value_text = re.sub(
-            r"of\s+re\.?\s*\d+\s+each",
+            r"of\s+re\.?\s*\d+\s*/?-?\s*each",
+            " ",
+            value_text,
+            flags=re.IGNORECASE
+        )
+        value_text = re.sub(
+            r"of\s+rs[,.]?\s*\d+\s*/?-?\s*each",
             " ",
             value_text,
             flags=re.IGNORECASE
@@ -556,6 +775,8 @@ def trim_row_at_boundary(row_text, metric_name):
     boundaries_by_metric = {
         "revenue": [
             "other income",
+            "otherincome",
+            "wotherincome",
             "total income",
             "expenses",
         ],
@@ -641,6 +862,34 @@ def extract_metric_numbers(
     )
 
     if (
+        metric_name in ["revenue", "total_income"]
+        and numbers
+        and "." not in value_text
+        and "," not in value_text
+        and len(numbers) >= 4
+        and all(
+            abs(number) >= 10000
+            for number in numbers[:min(MAX_VALUES_PER_METRIC_ROW, len(numbers))]
+        )
+    ):
+        numbers = [
+            round(number / 100, 2)
+            for number in numbers
+        ]
+
+    if (
+        metric_name == "profit_after_tax"
+        and "other comprehensive" in row_text.lower()
+        and len(numbers) >= MAX_VALUES_PER_METRIC_ROW
+        and abs(numbers[MAX_VALUES_PER_METRIC_ROW - 1]) <= 20
+        and float(numbers[MAX_VALUES_PER_METRIC_ROW - 1]).is_integer()
+    ):
+        numbers = (
+            numbers[:MAX_VALUES_PER_METRIC_ROW - 1]
+            + numbers[MAX_VALUES_PER_METRIC_ROW:]
+        )
+
+    if (
         metric_name == "eps"
         and numbers
         and "." not in value_text
@@ -656,7 +905,38 @@ def extract_metric_numbers(
             for number in numbers
         ]
 
-    return numbers[:MAX_VALUES_PER_METRIC_ROW]
+    return numbers[:MAX_RAW_VALUES_PER_METRIC_ROW]
+
+
+def is_clean_metric_value_line(line):
+
+    if not line:
+        return False
+
+    if line_has_metric_keyword(line):
+        return False
+
+    numbers = extract_metric_value_tokens(line)
+
+    if len(numbers) < MAX_VALUES_PER_METRIC_ROW:
+        return False
+
+    line_lower = line.lower()
+
+    if any(
+        word in line_lower
+        for word in [
+            "march",
+            "december",
+            "audited",
+            "unaudited",
+            "refer note",
+            "particulars",
+        ]
+    ):
+        return False
+
+    return True
 
 
 def line_has_metric_keyword(line):
@@ -747,6 +1027,50 @@ def map_values_to_periods(values):
     }
 
 
+def select_period_values(numbers, source_type="unknown"):
+
+    if not numbers:
+        return []
+
+    clean_numbers = list(numbers)
+
+    if (
+        len(clean_numbers) > MAX_VALUES_PER_METRIC_ROW
+        and abs(clean_numbers[0]) <= 20
+        and float(clean_numbers[0]).is_integer()
+    ):
+        clean_numbers = clean_numbers[1:]
+
+    if len(clean_numbers) >= 10:
+
+        is_dual_standalone_consolidated_layout = (
+            abs(clean_numbers[6]) > abs(clean_numbers[0])
+            and abs(clean_numbers[8]) > abs(clean_numbers[3])
+        )
+
+        if is_dual_standalone_consolidated_layout:
+
+            if source_type in ["consolidated", "unknown"]:
+                return [
+                    clean_numbers[3],
+                    clean_numbers[4],
+                    clean_numbers[5],
+                    clean_numbers[8],
+                    clean_numbers[9],
+                ]
+
+            if source_type == "standalone":
+                return [
+                    clean_numbers[0],
+                    clean_numbers[1],
+                    clean_numbers[2],
+                    clean_numbers[6],
+                    clean_numbers[7],
+                ]
+
+    return clean_numbers[:MAX_VALUES_PER_METRIC_ROW]
+
+
 def has_reliable_period_values(values):
 
     if len(values) < MAX_VALUES_PER_METRIC_ROW:
@@ -779,20 +1103,26 @@ def build_metric_result(
     row_score=None
 ):
 
+    period_numbers = select_period_values(
+        numbers,
+        source_type
+    )
+
     period_values = {}
     period_mapping_complete = has_reliable_period_values(
-        numbers
+        period_numbers
     )
 
     if period_mapping_complete:
         period_values = map_values_to_periods(
-            numbers[:MAX_VALUES_PER_METRIC_ROW]
+            period_numbers
         )
 
     return {
         "raw_line": raw_line.strip(),
         "period_labels": FINANCIAL_RESULT_PERIOD_LABELS,
-        "values": numbers[:MAX_VALUES_PER_METRIC_ROW],
+        "values": period_numbers,
+        "raw_values": numbers,
         "period_values": period_values,
         "source_type": source_type,
         "row_score": (
@@ -860,6 +1190,9 @@ def _extract_financial_metrics_from_text(
                     numbers
                 )
 
+                if row_score < 0:
+                    continue
+
                 extracted_metrics["profit_after_tax"] = (
                     build_metric_result(
                         raw_line,
@@ -902,6 +1235,9 @@ def _extract_financial_metrics_from_text(
                     numbers
                 )
 
+                if row_score < 0:
+                    continue
+
                 extracted_metrics["profit_after_tax"] = (
                     build_metric_result(
                         raw_line,
@@ -928,10 +1264,28 @@ def _extract_financial_metrics_from_text(
             if not matched_keyword:
                 continue
 
-            raw_line, block_numbers = extract_metric_row_block(
-                lines,
-                index
-            )
+            if (
+                metric_name == "revenue"
+                and not extract_metric_value_tokens(line)
+                and index > 0
+                and is_clean_metric_value_line(
+                    lines[index - 1]
+                )
+            ):
+                raw_line = (
+                    line.strip()
+                    + " "
+                    + lines[index - 1].strip()
+                )
+                block_numbers = extract_metric_value_tokens(
+                    lines[index - 1]
+                )
+            else:
+                raw_line, block_numbers = extract_metric_row_block(
+                    lines,
+                    index
+                )
+
             numbers = extract_metric_numbers(
                 raw_line,
                 metric_name,
@@ -946,6 +1300,8 @@ def _extract_financial_metrics_from_text(
                 raw_line,
                 numbers
             )
+            if score < 0:
+                continue
             if score <= best_metric_scores[metric_name]:
                 continue
             best_metric_scores[metric_name] = score
@@ -1082,6 +1438,7 @@ def extract_financial_metrics(text):
     sections = split_financial_sections(text)
 
     best_metrics = {}
+    section_metric_sets = []
 
     for section in sections:
 
@@ -1096,6 +1453,17 @@ def extract_financial_metrics(text):
 
         if not metrics:
             continue
+
+        section_metric_sets.append(
+            {
+                "source_type": source_type,
+                "metrics": metrics,
+                "score": score_metric_set(
+                    metrics,
+                    source_type
+                )
+            }
+        )
 
         for metric_name, metric in metrics.items():
 
@@ -1115,6 +1483,60 @@ def extract_financial_metrics(text):
         return _extract_financial_metrics_from_text(
             text
         )
+
+    primary_metric_set = max(
+        section_metric_sets,
+        key=lambda metric_set: metric_set["score"],
+        default=None
+    )
+
+    if primary_metric_set:
+
+        primary_source_type = primary_metric_set["source_type"]
+        coherent_metrics = dict(
+            primary_metric_set["metrics"]
+        )
+
+        for metric_set in sorted(
+            section_metric_sets,
+            key=lambda metric_set: metric_set["score"],
+            reverse=True
+        ):
+
+            if metric_set["source_type"] != primary_source_type:
+                continue
+
+            for metric_name, metric in metric_set["metrics"].items():
+
+                current_metric = coherent_metrics.get(
+                    metric_name
+                )
+
+                if (
+                    not current_metric
+                    or (
+                        not current_metric.get("period_mapping_complete")
+                        and metric.get("period_mapping_complete")
+                    )
+                ):
+                    coherent_metrics[metric_name] = metric
+
+        for metric_name, metric in best_metrics.items():
+
+            current_metric = coherent_metrics.get(
+                metric_name
+            )
+
+            if (
+                not current_metric
+                or (
+                    not current_metric.get("period_mapping_complete")
+                    and metric.get("period_mapping_complete")
+                )
+            ):
+                coherent_metrics[metric_name] = metric
+
+        return coherent_metrics
 
     return best_metrics
 
